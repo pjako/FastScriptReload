@@ -74,8 +74,16 @@ namespace FastScriptReload.Runtime
                     if (ProjectTypeCache.AllTypesInNonDynamicGeneratedAssemblies.TryGetValue(createdTypeNameWithoutPatchedPostfix, out var matchingTypeInExistingAssemblies))
                     {
                         _existingTypeToRedirectedType[matchingTypeInExistingAssemblies] = createdType;
-                        
-                        if (!editorOptions.IsDidFieldsOrPropertyCountChangedCheckDisabled 
+
+                        if (IsCompilerGenerated(createdType) && !HaveSameInstanceFields(createdType, matchingTypeInExistingAssemblies))
+                        {
+                            //Closures and coroutine / async state machines still running would execute new code on their old field layout.
+                            //They keep running old code instead, new ones are created from the new type anyway
+                            LoggerScoped.LogDebug($"Fields of compiler generated type: '{matchingTypeInExistingAssemblies.FullName}' changed, existing instances keep running previous code.");
+                            continue;
+                        }
+
+                        if (!editorOptions.IsDidFieldsOrPropertyCountChangedCheckDisabled
                             && !editorOptions.EnableExperimentalAddedFieldsSupport
                             && DidFieldsOrPropertyCountChanged(createdType,  matchingTypeInExistingAssemblies))
                         {
@@ -94,9 +102,20 @@ namespace FastScriptReload.Runtime
                             }
                         }
 
+                        var methodsWithChangedLambdas = FindMethodsWithChangedLambdas(createdType, matchingTypeInExistingAssemblies);
+
                         foreach (var createdTypeMethodToUpdate in createdType.GetMethods(ALL_DECLARED_METHODS_BINDING_FLAGS)
                                      .Where(m => !ExcludeMethodsDefinedOnTypes.Contains(m.DeclaringType)))
                         {
+                            if (TryGetLambdaContainingMethodName(createdTypeMethodToUpdate, out var lambdaContainingMethodName)
+                                && methodsWithChangedLambdas.Contains(lambdaContainingMethodName))
+                            {
+                                //Lambdas are named by their position, after adding / removing one the same name can belong to a different lambda.
+                                //Delegates created before the change keep running previous code
+                                LoggerScoped.LogDebug($"Lambdas in method: '{lambdaContainingMethodName}' of type: '{matchingTypeInExistingAssemblies.FullName}' were added or removed, existing delegates keep running previous code.");
+                                continue;
+                            }
+
                             var createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix = RemoveClassPostfix(createdTypeMethodToUpdate.FullDescription());
                             allDeclaredMethodsInExistingTypeByDescription.TryGetValue(createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix, out var matchingMethodInExistingType);
                             if (matchingMethodInExistingType != null)
@@ -155,6 +174,57 @@ namespace FastScriptReload.Runtime
         public Type GetRedirectedType(Type forExistingType)
         {
             return _existingTypeToRedirectedType[forExistingType];
+        }
+
+        //Closure classes, lambda caches and iterator / async state machines, their names start with '<' (eg '<>c__DisplayClass4_0', '<Fire>d__5')
+        private static bool IsCompilerGenerated(Type type)
+        {
+            return type.Name.StartsWith("<");
+        }
+
+        private static bool HaveSameInstanceFields(Type createdType, Type existingType)
+        {
+            const BindingFlags instanceFields = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            var createdTypeFields = createdType.GetFields(instanceFields).Select(f => RemoveClassPostfix(f.FieldType.FullName ?? f.FieldType.Name) + " " + f.Name);
+            var existingTypeFields = existingType.GetFields(instanceFields).Select(f => (f.FieldType.FullName ?? f.FieldType.Name) + " " + f.Name);
+            return createdTypeFields.SequenceEqual(existingTypeFields);
+        }
+
+        //Lambdas compile to methods named after the method containing them plus their position, eg '<Start>b__4_0'
+        private static bool TryGetLambdaContainingMethodName(MethodInfo method, out string containingMethodName)
+        {
+            var lambdaMarkerIndex = method.Name.IndexOf(">b__", StringComparison.Ordinal);
+            containingMethodName = method.Name.StartsWith("<") && lambdaMarkerIndex > 0 ? method.Name.Substring(1, lambdaMarkerIndex - 1) : null;
+            return containingMethodName != null;
+        }
+
+        private static HashSet<string> FindMethodsWithChangedLambdas(Type createdType, Type existingType)
+        {
+            var createdTypeLambdas = GroupLambdasByContainingMethod(createdType, m => RemoveClassPostfix(m.FullDescription()));
+            var existingTypeLambdas = GroupLambdasByContainingMethod(existingType, m => m.FullDescription());
+
+            return new HashSet<string>(createdTypeLambdas.Keys.Concat(existingTypeLambdas.Keys)
+                .Where(containingMethodName => !createdTypeLambdas.TryGetValue(containingMethodName, out var created)
+                                               || !existingTypeLambdas.TryGetValue(containingMethodName, out var existing)
+                                               || !created.SequenceEqual(existing)));
+        }
+
+        private static Dictionary<string, List<string>> GroupLambdasByContainingMethod(Type type, Func<MethodInfo, string> getDescription)
+        {
+            var lambdasByContainingMethod = new Dictionary<string, List<string>>();
+            foreach (var method in type.GetMethods(ALL_DECLARED_METHODS_BINDING_FLAGS).OrderBy(m => m.Name, StringComparer.Ordinal))
+            {
+                if (TryGetLambdaContainingMethodName(method, out var containingMethodName))
+                {
+                    if (!lambdasByContainingMethod.TryGetValue(containingMethodName, out var lambdas))
+                    {
+                        lambdasByContainingMethod[containingMethodName] = lambdas = new List<string>();
+                    }
+                    lambdas.Add(getDescription(method));
+                }
+            }
+
+            return lambdasByContainingMethod;
         }
 
         private static bool DidFieldsOrPropertyCountChanged(Type createdType, Type matchingTypeInExistingAssemblies)
