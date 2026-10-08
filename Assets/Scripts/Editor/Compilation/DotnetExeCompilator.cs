@@ -99,6 +99,7 @@ namespace FastScriptReload.Editor.Compilation
                 {
                     var sw = Stopwatch.StartNew();
                     _ = ProjectTypeCache.AllTypesInNonDynamicGeneratedAssemblies;
+                    GenericInstantiations.EnsureIndexed();
                     if (IsInProcessCompilationEnabled)
                     {
                         InProcessRoslynCompilation.WarmUp(ActiveScriptCompilationDefines, ResolveReferencePaths(new Dictionary<string, string>()));
