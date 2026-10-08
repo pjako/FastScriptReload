@@ -155,6 +155,11 @@ namespace FastScriptReload.Runtime
                         FindAndExecuteStaticOnScriptHotReloadNoInstance(createdType);
                         FindAndExecuteOnScriptHotReload(matchingTypeInExistingAssemblies, createdType);
                     }
+                    else if (IsCompilerGenerated(createdType))
+                    {
+                        //Generated for code that only exists in the new version (eg a new lambda or 'dynamic' call), there's nothing to update
+                        LoggerScoped.LogDebug($"New compiler generated type: '{createdType.FullName}'");
+                    }
                     else
                     {
                         LoggerScoped.LogWarning($"FSR: Unable to find existing type for: '{createdType.FullName}', this is not an issue if you added new type. <color=orange>If it's an existing type please do a full domain-reload - one of optimisations is to cache existing types for later lookup on first call.</color>");
