@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -64,7 +65,14 @@ namespace FastScriptReload.Editor
 
 #pragma warning restore 0618
 
+        private const int MsThresholdToConsiderSameChangeFromDifferentFileWatchers = 500;
+
+        //File watchers add entries from their own threads, every access needs to hold the lock
         private List<DynamicFileHotReloadState> _dynamicFileHotReloadStateEntries = new List<DynamicFileHotReloadState>();
+        private readonly object _dynamicFileHotReloadStateEntriesLock = new object();
+
+        //Compilation runs on a background thread, its results are applied from Update on the main thread
+        private readonly ConcurrentQueue<Action> _mainThreadActions = new ConcurrentQueue<Action>();
 
         private DateTime _lastTimeChangeBatchRun = default(DateTime);
         private bool _assemblyChangesLoaderResolverResolutionAlreadyCalled;
@@ -103,17 +111,20 @@ namespace FastScriptReload.Editor
                 return;
             }
             
-            const int msThresholdToConsiderSameChangeFromDifferentFileWatchers = 500;
-            var isDuplicatedChangesComingFromDifferentFileWatcher = _dynamicFileHotReloadStateEntries
-                .Any(f => f.FullFileName == filePath
-                          && (DateTime.UtcNow - f.FileChangedOn).TotalMilliseconds < msThresholdToConsiderSameChangeFromDifferentFileWatchers);
-            if (isDuplicatedChangesComingFromDifferentFileWatcher)
+            lock (_dynamicFileHotReloadStateEntriesLock)
             {
-                LoggerScoped.LogWarning($"FastScriptReload: Looks like change to: {filePath} have already been added for processing. This can happen if you have multiple file watchers set in a way that they overlap.");
-                return;
+                var isDuplicatedChangesComingFromDifferentFileWatcher = _dynamicFileHotReloadStateEntries
+                    .Any(f => f.FullFileName == filePath
+                              && (DateTime.UtcNow - f.FileChangedOn).TotalMilliseconds < MsThresholdToConsiderSameChangeFromDifferentFileWatchers);
+                if (isDuplicatedChangesComingFromDifferentFileWatcher)
+                {
+                    //Expected when one save raises several events (eg Renamed and Changed), or when file watchers overlap
+                    LoggerScoped.LogDebug($"FastScriptReload: Looks like change to: {filePath} have already been added for processing.");
+                    return;
+                }
+
+                _dynamicFileHotReloadStateEntries.Add(new DynamicFileHotReloadState(filePath, DateTime.UtcNow));
             }
-            
-            _dynamicFileHotReloadStateEntries.Add(new DynamicFileHotReloadState(filePath, DateTime.UtcNow));
         }
 
         public bool ShouldIgnoreFileChange()
@@ -150,9 +161,19 @@ namespace FastScriptReload.Editor
                     fileWatcher.Path = directoryInfo.FullName;
                     fileWatcher.IncludeSubdirectories = includeSubdirectories;
                     fileWatcher.Filter =  filter;
-                    fileWatcher.NotifyFilter = NotifyFilters.LastWrite;
+                    fileWatcher.NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.FileName;
                     fileWatcher.Changed += OnWatchedFileChange;
-        
+
+                    // Editors with 'safe write' (eg Rider) save to a temporary file and rename it over the original,
+                    // which raises Renamed instead of Changed
+                    fileWatcher.Renamed += (source, e) =>
+                    {
+                        if (e.Name.EndsWith(".cs"))
+                        {
+                            OnWatchedFileChange(source, e);
+                        }
+                    };
+
                     fileWatcher.EnableRaisingEvents = true;
         
                     _fileWatchers.Add(fileWatcher);
@@ -465,6 +486,11 @@ namespace FastScriptReload.Editor
 
         public void Update()
         {
+            while (_mainThreadActions.TryDequeue(out var mainThreadAction))
+            {
+                mainThreadAction();
+            }
+
             _isEditorModeHotReloadEnabled = (bool)FastScriptReloadPreference.EnableExperimentalEditorHotReloadSupport.GetEditorPersistedValueOrDefault();
             if (_lastPlayModeStateChange == PlayModeStateChange.ExitingPlayMode && Instance._fileWatchers.Any())
             {
@@ -550,17 +576,25 @@ namespace FastScriptReload.Editor
             }
             
             var assemblyChangesLoader = AssemblyChangesLoaderResolver.Instance.Resolve();
-            var changesAwaitingHotReload = _dynamicFileHotReloadStateEntries
-                .Where(e => e.IsAwaitingCompilation)
-                .ToList();
-
-            if (changesAwaitingHotReload.Any())
+            List<DynamicFileHotReloadState> changesAwaitingHotReload;
+            lock (_dynamicFileHotReloadStateEntriesLock)
             {
-                UpdateLastProcessedDynamicFileHotReloadStates(changesAwaitingHotReload);
+                //Finished entries only need to stay around long enough to catch duplicated events from overlapping file watchers
+                _dynamicFileHotReloadStateEntries.RemoveAll(e => (e.IsChangeHotSwapped || e.IsFailed)
+                    && (DateTime.UtcNow - e.FileChangedOn).TotalMilliseconds >= MsThresholdToConsiderSameChangeFromDifferentFileWatchers);
+
+                changesAwaitingHotReload = _dynamicFileHotReloadStateEntries
+                    .Where(e => e.IsAwaitingCompilation)
+                    .ToList();
                 foreach (var c in changesAwaitingHotReload)
                 {
                     c.IsBeingProcessed = true;
                 }
+            }
+
+            if (changesAwaitingHotReload.Any())
+            {
+                UpdateLastProcessedDynamicFileHotReloadStates(changesAwaitingHotReload);
 
                 var unityMainThreadDispatcher = UnityMainThreadDispatcher.Instance.EnsureInitialized(); //need to pass that in, resolving on other than main thread will cause exception
                 Task.Run(() =>
@@ -575,23 +609,12 @@ namespace FastScriptReload.Editor
                         var dynamicallyLoadedAssemblyCompilerResult = DynamicAssemblyCompiler.Compile(sourceCodeFilesWithUniqueChangesAwaitingHotReload, unityMainThreadDispatcher);
                         if (!dynamicallyLoadedAssemblyCompilerResult.IsError)
                         {
-                            changesAwaitingHotReload.ForEach(c =>
-                            {
-                                c.FileCompiledOn = DateTime.UtcNow;
-                                c.AssemblyNameCompiledIn = dynamicallyLoadedAssemblyCompilerResult.CompiledAssemblyPath;
-                            });
+                            //Builds the type lookup here so the main thread doesn't stall on it during the first hot reload
+                            _ = ProjectTypeCache.AllTypesInNonDynamicGeneratedAssemblies;
 
-                            //TODO: return some proper results to make sure entries are correctly updated
-                            assemblyChangesLoader.DynamicallyUpdateMethodsForCreatedAssembly(dynamicallyLoadedAssemblyCompilerResult.CompiledAssembly, AssemblyChangesLoaderEditorOptionsNeededInBuild);
-                            changesAwaitingHotReload.ForEach(c =>
-                            {
-                                c.HotSwappedOn = DateTime.UtcNow;
-                                c.IsBeingProcessed = false;
-                            }); //TODO: technically not all were hot swapped at same time
-
-                            _hotReloadPerformedCount++;
-                            
-                            SafeInvoke(HotReloadSucceeded, changesAwaitingHotReload);
+                            //Methods are swapped on the main thread, between frames, so it can't be executing a method while its code is being overwritten
+                            _mainThreadActions.Enqueue(() => ApplyCompiledChanges(dynamicallyLoadedAssemblyCompilerResult, assemblyChangesLoader,
+                                changesAwaitingHotReload, sourceCodeFilesWithUniqueChangesAwaitingHotReload));
                         }
                         else
                         {
@@ -603,38 +626,68 @@ namespace FastScriptReload.Editor
                                     msg.AppendLine($"Error  when compiling, it's best to check code and make sure it's compilable \r\n {message}\n");
                                 }
 
-                                var errorMessage = msg.ToString();
-
-                                changesAwaitingHotReload.ForEach(c =>
-                                {
-                                    c.ErrorOn = DateTime.UtcNow;
-                                    c.ErrorText = errorMessage;
-                                });
-
-                                throw new Exception(errorMessage);
+                                throw new Exception(msg.ToString());
                             }
                         }
                     }
                     catch (Exception ex)
                     {
-                        if (ex is SourceCodeHasErrorsException e)
-                            LoggerScoped.LogError(e.Message + Environment.NewLine);
-                        else
-                            LoggerScoped.LogError($"Error when updating files: '{(sourceCodeFilesWithUniqueChangesAwaitingHotReload != null ? string.Join(",", sourceCodeFilesWithUniqueChangesAwaitingHotReload.Select(fn => new FileInfo(fn).Name)) : "unknown")}', {ex}");
-                        
-                        changesAwaitingHotReload.ForEach(c =>
-                        {
-                            c.ErrorOn = DateTime.UtcNow;
-                            c.ErrorText = ex.Message;
-                            c.SourceCodeCombinedFilePath = (ex as HotReloadCompilationException)?.SourceCodeCombinedFileCreated;
-                        });
-
-                        SafeInvoke(HotReloadFailed, changesAwaitingHotReload);
+                        _mainThreadActions.Enqueue(() => HandleHotReloadFailure(ex, changesAwaitingHotReload, sourceCodeFilesWithUniqueChangesAwaitingHotReload));
                     }
                 });
             }
 
             _lastTimeChangeBatchRun = DateTime.UtcNow;
+        }
+
+        private void ApplyCompiledChanges(CompileResult compileResult, IAssemblyChangesLoader assemblyChangesLoader,
+            List<DynamicFileHotReloadState> changesAwaitingHotReload, List<string> sourceCodeFiles)
+        {
+            try
+            {
+                changesAwaitingHotReload.ForEach(c =>
+                {
+                    c.FileCompiledOn = DateTime.UtcNow;
+                    c.AssemblyNameCompiledIn = compileResult.CompiledAssemblyPath;
+                });
+
+                //TODO: return some proper results to make sure entries are correctly updated
+                assemblyChangesLoader.DynamicallyUpdateMethodsForCreatedAssembly(compileResult.CompiledAssembly, AssemblyChangesLoaderEditorOptionsNeededInBuild);
+                changesAwaitingHotReload.ForEach(c =>
+                {
+                    c.HotSwappedOn = DateTime.UtcNow;
+                    c.IsBeingProcessed = false;
+                }); //TODO: technically not all were hot swapped at same time
+
+                _hotReloadPerformedCount++;
+
+                SafeInvoke(HotReloadSucceeded, changesAwaitingHotReload);
+            }
+            catch (Exception ex)
+            {
+                HandleHotReloadFailure(ex, changesAwaitingHotReload, sourceCodeFiles);
+            }
+        }
+
+        private void HandleHotReloadFailure(Exception ex, List<DynamicFileHotReloadState> changesAwaitingHotReload, List<string> sourceCodeFiles)
+        {
+            if (ex is SourceCodeHasErrorsException e)
+            {
+                LoggerScoped.LogError(e.Message + Environment.NewLine);
+            }
+            else
+            {
+                LoggerScoped.LogError($"Error when updating files: '{(sourceCodeFiles != null ? string.Join(",", sourceCodeFiles.Select(fn => new FileInfo(fn).Name)) : "unknown")}', {ex}");
+            }
+
+            changesAwaitingHotReload.ForEach(c =>
+            {
+                c.ErrorOn = DateTime.UtcNow;
+                c.ErrorText = ex.Message;
+                c.SourceCodeCombinedFilePath = (ex as HotReloadCompilationException)?.SourceCodeCombinedFileCreated;
+            });
+
+            SafeInvoke(HotReloadFailed, changesAwaitingHotReload);
         }
 
         private void SafeInvoke(Action<List<DynamicFileHotReloadState>> ev, List<DynamicFileHotReloadState> changesAwaitingHotReload)
