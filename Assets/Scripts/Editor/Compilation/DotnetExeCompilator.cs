@@ -28,7 +28,7 @@ namespace FastScriptReload.Editor.Compilation
 
         private static string ApplicationContentsPath = EditorApplication.applicationContentsPath;
         private static readonly List<string> _createdFilesToCleanUp = new List<string>();
-        private static readonly Dictionary<string, Assembly> _typeNameAssemblyCache = new Dictionary<string, Assembly>(16);
+        private static readonly Dictionary<string, List<Assembly>> _typeNameAssembliesCache = new Dictionary<string, List<Assembly>>(16);
         private static readonly List<string> _analyzers = new List<string>();
         private static readonly Dictionary<string, List<Assembly>> _assemblyNameToFriendAssemblyCache = new Dictionary<string, List<Assembly>>(16);
 
@@ -44,7 +44,7 @@ namespace FastScriptReload.Editor.Compilation
 
             _dotnetExePath = FindFileOrThrow(dotnetExecutablePath);
             _cscDll = FindFileOrThrow("csc.dll"); //even on mac/linux need to find dll and use, not no extension one
-            _tempFolder = Path.GetTempPath();
+            _tempFolder = CreateProjectTempFolder();
 
             foreach (var guid in AssetDatabase.FindAssets("t: " + nameof(DefaultAsset)))
             {
@@ -66,12 +66,44 @@ namespace FastScriptReload.Editor.Compilation
 
                     foreach (var fileToCleanup in _createdFilesToCleanUp)
                     {
-                        new FileInfo(fileToCleanup).IsReadOnly = false;
-                        File.Delete(fileToCleanup);
+                        TryDeleteFile(fileToCleanup);
                     }
                     _createdFilesToCleanUp.Clear();
                 }
             };
+        }
+
+        private static string CreateProjectTempFolder()
+        {
+            // One folder per project, several editors can be open at once and must not delete each other's files
+            var projectHash = UnityEngine.Hash128.Compute(UnityEngine.Application.dataPath).ToString();
+            var tempFolder = Path.Combine(Path.GetTempPath(), "FastScriptReload", projectHash);
+
+            // Runs after every domain reload, so assemblies compiled earlier are no longer loaded and their files can be removed.
+            // Otherwise they'd pile up, compiled assemblies are never deleted while loaded (Windows keeps them locked)
+            if (Directory.Exists(tempFolder))
+            {
+                foreach (var leftoverFile in Directory.GetFiles(tempFolder))
+                {
+                    TryDeleteFile(leftoverFile);
+                }
+            }
+
+            Directory.CreateDirectory(tempFolder);
+            return tempFolder + Path.DirectorySeparatorChar;
+        }
+
+        private static void TryDeleteFile(string filePath)
+        {
+            try
+            {
+                new FileInfo(filePath).IsReadOnly = false;
+                File.Delete(filePath);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                LoggerScoped.LogDebug($"Unable to remove temporary file: '{filePath}', {e.Message}");
+            }
         }
 
         private static string FindFileOrThrow(string fileName)
@@ -182,8 +214,7 @@ You can also:
             try
             {
                 var assembliesForTypesInCombinedFile = createSourceCodeCombinedResult.TypeNamesDefinitions
-                    .Select(GetAssemblyByTypeName)
-                    .Where(t => t != null)
+                    .SelectMany(GetAssembliesByTypeName)
                     .Distinct();
                 var friendAssemblies = assembliesForTypesInCombinedFile
                     .SelectMany(a => GetFriendAssembliesByAssemblyName(a.GetName().Name)) // indirect assemblies...
@@ -213,20 +244,32 @@ You can also:
             createdFilesToCleanUp.Add(filePath);
         }
 
-        private static Assembly GetAssemblyByTypeName(string typeName)
+        private static List<Assembly> GetAssembliesByTypeName(string typeName)
         {
             // This cache is barely worth it on my machine - it's ~1ms without, ~0ms with.
             // However, the number of assemblies to search is technically unbounded
             //  - so this might be more important for somebody else.
-            if (_typeNameAssemblyCache.TryGetValue(typeName, out var assembly)) return assembly;
+            if (_typeNameAssembliesCache.TryGetValue(typeName, out var assemblies))
+            {
+                return assemblies;
+            }
 
             // FSR (via Harmony) originally did this search by enumerating assembly.GetTypes().
             // I can't see anything in the documentation suggesting the assembly.GetType(typeName) version misses any cases.
             // It's much faster.
-            assembly = AppDomain.CurrentDomain.GetAssemblies().SingleOrDefault(asm => asm.GetType(typeName, false) != null);
+            // The same type name can be defined in more than one assembly (eg in two asmdefs), all of them need internals visible.
+            // Dynamic and hot reload compiled assemblies have no file on disk to copy, so they're skipped.
+            assemblies = AppDomain.CurrentDomain.GetAssemblies()
+                .Where(asm => !asm.IsDynamic
+                              && asm.GetCustomAttribute<DynamicallyCreatedAssemblyAttribute>() == null
+                              && asm.GetType(typeName, false) != null)
+                .ToList();
 
-            if (assembly != null) _typeNameAssemblyCache.Add(typeName, assembly);
-            return assembly;
+            if (assemblies.Count > 0)
+            {
+                _typeNameAssembliesCache.Add(typeName, assemblies);
+            }
+            return assemblies;
         }
 
         private static List<Assembly> GetFriendAssembliesByAssemblyName(string assemblyName)
