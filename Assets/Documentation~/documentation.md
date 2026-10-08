@@ -4,16 +4,17 @@ Tool will allow you to iterate quicker on your code. You simply go into play mod
 
 ## Getting started
 1) Import
-2) Welcome screen will open - it contains all needed info to get started as well as support links and configuration.
+2) Welcome screen will open - it contains all needed info to get started as well as support links.
 `You can always get back to this screen via 'Window -> Fast/Live Script Reload -> Start Screen'`
 3) Go to Launch Demo -> Basic Example window
 4) Follow instructions listed there
 
-> During startup asset will check if Unity Auto Refresh is enabled and offer to adjust it in order to work properly. Depending on your workflow you want it in 'EnabledOutsidePlaymode' or 'Disabled' - this is to ensure Unity will not trigger script compilation on changes and will let Fast Script Reload to work.
+Settings are in `Project Settings -> Fast Script Reload`.
 
-> Sometimes Unity can be quite stubborn and try to auto-reload scripts even with Auto-Reload turned off, if you can still see standard 'Reloading script assemblies' progress bar on change please go to:
-> 'Window -> Fast Script Reload -> Start Screen -> Reload -> Force prevent assembly reload during playmode'.
-> This way tool will lock reload in code when you enter playmode.
+> No Unity settings need to be changed. While playing, changed scripts are hot reloaded and Unity's own domain reload is held back until play mode ends.
+> Outside play mode Unity compiles scripts as usual - saving a script starts the compilation right away, without switching to Unity or using Assets -> Refresh.
+
+> Apple Silicon (M1 and newer) Macs are supported.
 
 ```
 Example scene 'Point' material should automatically detect URP or surface shader
@@ -66,13 +67,10 @@ Custom code can be executed on hot reload by adding a method to changed script.
     }
 ```
 
-## EXPERIMENTAL Adding New Fields
-Asset has an experimental support for adding new fields at runtime which will also render in Editor and allow you to tweak values - same as with normal fields.
+## Adding New Fields
+Fields added while playing work, are shown in the Inspector and can be tweaked there - same as with normal fields.
 
-To enable, please:
-`Window -> Fast Script Reload -> Start Window -> New Fields -> Enable experimental added field support`.
-
-> As this is an experimental feature please expect it to break more often! It'd be great help if you could report any issues via Discord / email.
+> On Apple Silicon Macs the Inspector can't show them, use `Window -> Fast Script Reload -> Added Fields` instead. It shows the added fields of the selected GameObject's components.
 
 ### New Fields - specific limitations
 
@@ -97,7 +95,7 @@ is intended for some specific use cases (like iterating on editor scripts).
 > **Feature is not intended as a replacement for Unity compile / reload mechanism**
 
 To enable, please:
-`Window -> Fast Script Reload -> Start Window -> Editor Hot-Reload -> Enable Hot-Reload outside of play mode`.
+`Project Settings -> Fast Script Reload -> Advanced -> Hot reload outside play mode (experimental)`.
 
 > As this is an experimental feature please expect it to break more often! It'd be great help if you could report any issues via Discord / email.
 
@@ -106,7 +104,7 @@ Debugging is fully supported although breakpoints in your original file won't be
 
 Once change is compiled, you'll get an option to open generated file [via clickable link in console window] in which you can set breakpoints.
 
-Tool can also auto-open generated files for you on change for simpler access, you can find option via 'Window -> Fast Script Reload -> Start Screen -> Debugging -> Auto open generated source file for debugging'
+Tool can also auto-open generated files for you on change for simpler access, you can find option via 'Project Settings -> Fast Script Reload -> Advanced -> Auto-open generated source file for debugging'
 
 > Debugging with Rider for Unity 2019 and 2020 is having some issues, you can only open debuggable files with auto-open feature. Clicking a file in console causes subtle static-variables reload (not full domain reload) that'll break your play-session.
 
@@ -240,38 +238,33 @@ This will take you to tool settings window. You can also access it via:
 
 
 ## Options
-You can access Welcome Screen / Options via 'Window -> Fast/Live Script Reload -> Start Screen' - it contains useful information as well as options.
+Settings are in `Project Settings -> Fast Script Reload`, less common ones are in its Advanced section.
 ```
 Context menus will be prefixed with used version, either 'Fast Script Reload' or 'Live Script Reload'
 ```
 
 ### Auto Hot-Reload
-By default tool will pick changes made to any file in playmode. You can add exclusions to that behaviour, more on that later.
+By default tool will pick changes made to any script in playmode. You can add exclusions to that behaviour, more on that later.
 
 You can also manually manage reload, to do so:
-1) Un-tick 'Enable auto Hot-Reload for changed files' in Options -> Reload page
+1) Un-tick 'Hot reload changed scripts in play mode' and tick 'Allow reloading on demand' (Advanced)
 2) Click Window -> Fast Script Reload -> Force Reload to trigger
 3) or call `FastScriptReloadManager.TriggerReloadForChangedFiles()` method from code
 
 > You can also use Editor -> Hotkeys to bind Force Reload to specific key.
 
+### Which scripts are hot reloaded
+Scripts are found from the assemblies Unity compiles: everything in Assets and in embedded / local packages (including ones outside the project folder).
+Packages from the registry or git can't be edited and aren't watched. Scripts added since Unity last compiled are picked up as well, unless they're in a folder Unity ignores (ending with `~` or starting with `.`).
 
-### Watch only specific files or folders
-By default FSR watches all files (as specified in global file watcher) - if you want to limit that behaviour to specific files 
-please tick 'Specify watched folders/files manually' in 'Reload tab'.
+### File watcher implementation
+In some cases the default file watcher can cause issues. You can choose different implementations in `Project Settings -> Fast Script Reload -> Advanced -> File Watcher implementation`
 
-Then you can right click on folder/file in project window and select 'Fast Script Reload -> Watch File / Folder'.
-
-> Technically this adds another File Watcher behind the scenes, you can always adjust those on File Watchers tab. 
-
-### Custom file watcher implementation
-In some cases standard file default watcher API can cause issues. You can choose different file watcher implementations via 'Window -> Fast Script Reload -> Start Screen -> File Watchers -> File Watcher implementation'
-
-> DefaultUnity - on some editor versions it could be slow or not trigger at all
+> UnityDefault - fits most projects
 > 
-> DirectWindowsApi - (experimental) uses Windows API directly, faster (symlinks not supported)
+> DirectWindowsApi - uses Windows API directly, faster (symlinks not supported)
 >
-> CustomPolling - (experimental) watches files by manual polling for changes, slowest. Make sure to narrow down watchers scope to script folders
+> CustomPolling - checks files for changes regularly, use if changes aren't picked up (eg on network drives)
 
 ### [Live-Reload] Hot-Reload over Network
 With on-device build, your code changes will be distributed over the network in real-time.
@@ -314,8 +307,8 @@ Files can be excluded from auto-compilation.
 
 *You can remove exclusion from same menu*
 
-#### via Exclusions page
-To view all exclusions:
+#### via Settings
+All exclusions are listed in `Project Settings -> Fast Script Reload`. You can also get there by:
 1) Right click on any *.cs file
 2) Click Fast Script Reload
 3) Click Show Exclusions
@@ -324,19 +317,13 @@ To view all exclusions:
 You can also add `[PreventHotReload]` attribute to a class to prevent hot reload for that class.
 
 ### Reload after no further changes for N milliseconds
-Changed scripts are Hot-Reloaded as soon as no further changes come in for 100 milliseconds, so files saved together (eg 'save all' or a refactoring) are compiled in one go. You can change the duration from 'Reload' options page.
-
-### Disable added/removed fields check
-By default if you add / remove fields, tool will not redirect method calls for recompiled class.
-This is to ensure there are no issues as that is generally not supported.
-
-Some assets however will use IL weaving to adjust your classes (eg Mirror) as a post compile step. In that case it's quite likely hot-reload will still work.
+Changed scripts are Hot-Reloaded as soon as no further changes come in for 100 milliseconds, so files saved together (eg 'save all' or a refactoring) are compiled in one go. You can change the duration in the Advanced section of the settings.
 
 ### Managing reference exclusions
 Asset will reference all .dll files that original code is referencing. In some cases that causes compilation error (eg 'Type XYZ is defined in both assembly a.dll and b.dll).
 You can use those options to exclude specific references from being added.
 
-> 'Start Screen -> Exclude References (Advanced) -> adjust as needed'.
+> 'Project Settings -> Fast Script Reload -> Advanced -> References to exclude from Hot-Reload'.
 
 ## Performance
 
@@ -345,7 +332,7 @@ Biggest bit is additional memory used for your re-compiled code.
 Won't be visible unless you make 100s of changes in same play-session.
 
 ### File Watchers Performance Overhead
-In some cases watching for file changes is causing significant performance overhead. This is down to the Unity FileWatcher which I'm unable to change or provide suitable replacement for. If you're experiencing this issue please go to `Window -> Fast Script Reload -> File Watcher (Advanced Setup)` and narrow down watchers to specific path where you're working in. You can watch multiple folders in this manner.
+Only folders with project scripts are watched (Assets and embedded / local packages). If the default file watcher still causes overhead, try a different implementation in the Advanced settings.
 
 ## LIMITATIONS -please make sure to read those
 There are some limitation due to the approach taken to Hot-Reload your scripts. I've tried to minimise the impact to standard dev-workflow as much as possible.
@@ -354,127 +341,29 @@ In some cases however you may need to use workarounds as described below.
 
 > In most cases you'll be able to use [User Defined Script Overrides](#user-defined-script-overrides) to overcome limitations and make hot reload code compilable. 
 
-### Generic methods and classes won't be Hot-Reloaded
-Unfortunately generics will not be Hot-Reloaded, to workaround you'd need to move code to non-generic class / method.
+### Generic methods and classes
+Generic methods and methods of generic classes are Hot-Reloaded. Every instantiation used by project code is updated, eg `Box<int>`, `Box<Enemy>`, `Find<Enemy>()`. There are some exceptions:
 
-Tool will try to change non-generic methods in those files and will simply skip generic ones.
-
-*Note - you can still Hot-Reload for class implementations that derive from generic base class but are not generic themselves, eg.*
-```
-
-class SingletonImplementation: SingletonBase<SomeConcreteType> {
-   public void SomeSpecificFunctionality() {
-      //you can change code here and it'll be Hot-Reloaded as type itself is not generic
-   }
-   
-   public void GenericMethod<T>(T arg) {
-      //changes here won't be Hot-Reloaded as method is generic
-   }
-}
-
-class SingletonBase<T> where T: new() {
-   public T Instance;
-   
-   public void Init() {
-      Instance = new T(); //if you change this code it won't be Hot-Reloaded as it's in generic type
-   }
-}
-
-```
+- methods of a generic class used with reference types (eg `Box<Enemy>`) aren't updated when the changed code needs the type parameter at runtime - eg `typeof(T)`, `new T()`, `new List<T>()`, casts to `T`, static members of the class. Mono shares compiled code between reference types and that code would look up the wrong types. A warning lists the instantiations that keep running the previous code, value types (eg `Box<int>`) are always updated
+- instantiations only created inside other generic code (eg `Box<T>` used in `Foo<T>()`, called as `Foo<int>()`) aren't found and keep running the previous code
 
 ### Adding new fields
-Experimental support with 1.3, minor limitations remaining:
+Supported, minor limitations remaining:
 - outside classes can not call new fields added at runtime
 - new fields will only show in editor if they were already used at least once
 
-> You need to opt in via start screen -> 'Window -> Fast Script Reload -> Start Screen -> New Fields -> enable'!
-
 ### Passing `this` reference to method that expect concrete class implementation
+Changed code is compiled as a renamed class (eg `EnemyController__Patched_`), so passing `this` to a method expecting the original type wouldn't compile.
+Tool rewrites those calls and assignments (eg `m_EnemyManager.RegisterEnemy(this)`, `Instance = this`) to pass the original type, so they work as expected.
 
+> In nested classes the rewrite uses `dynamic`. If a called method has multiple overloads that can cause compiler errors, a warning is logged when that happens.
 
-`**By default experimental setting 'Enable method calls with 'this' as argument fix' is turned on in options, and should fix 'this' calls/assignment issue.
-If you see issues with that please turn setting off and get in touch via support email.**
-
-Unless experimental setting is on - it'll throw compilation error `The best overloaded method match for xxx has some invalid arguments` - this is due to the fact that changed code is technically different type.
-The code will need to be adjusted to depend on some abstraction instead (before hot-reload).
-
-This code would cause the above error.
-```
-public class EnemyController: MonoBehaviour { 
-    EnemyManager m_EnemyManager;
-
-    void Start()
-    {
-        //calling 'this' causes issues as after hot-reload the type of EnemyController will change to 'EnemyController__Patched_'
-        m_EnemyManager.RegisterEnemy(this);
-    }
-}
-
-public class EnemyManager : MonoBehaviour {
-    public void RegisterEnemy(EnemyController enemy) { //RegisterEnemy method expects parameter of concrete type (EnemyController) 
-        //impementation
-    }
-}
-```
-
-It could be changed to support Hot-Reload in following way:
-
-
-1) Don't depend on concrete implementations, instead use interfaces/abstraction
-```
-public class EnemyController: MonoBehaviour, IRegistrableEnemy { 
-    EnemyManager m_EnemyManager;
-
-    void Start()
-    {
-        //calling this causes issues as after hot-reload the type of EnemyController will change
-        m_EnemyManager.RegisterEnemy(this);
-    }
-}
-
-public class EnemyManager : MonoBehaviour {
-    public void RegisterEnemy(IRegistrableEnemy enemy) { //Using interface will go around error
-        //impementation
-    }
-}
-
-public interface IRegistrableEnemy
-{
-    //implementation
-}
-```
-
-2) Adjust method param to have common base class
-```
-public class EnemyManager : MonoBehaviour {
-    public void RegisterEnemy(MonoBehaviour enemy) { //Using common MonoBehaviour will go around error
-        //impementation
-    }
-}
-```
-
-### Assigning `this` to a field references
-Similar as above, this could cause some trouble although 'Enable method calls with 'this' as argument fix' setting will fix most of the issues. 
-
-Especially visible with singletons.
-eg.
-
-```
-public class MySingleton: MonoBehaviour {
-    public static MySingleton Instance;
-    
-    void Start() {
-        Instance = this;
-    }
-}
-```
+### Lambdas, closures and coroutines
+Delegates created before a change (eg event handlers subscribed in `Start`) and running coroutines are updated when only their body changed.
+When lambdas are added or removed in a method, or a closure / coroutine uses different local variables, existing delegates and running coroutines keep running the previous code - new ones use the changed code.
 
 ### Calling internal class members from changed code
-> You can use [User Defined Script Overrides](#user-defined-script-overrides) to overcome this limitation
-
-> fixed in unreleased 1.5 - please get in touch if you need a copy before release
-
-Technically, once your changed code is compiled it'll be in a separate assembly. As a result this changed code won't be able to access internal classes from assembly it originated from.
+Supported - changed code can use `internal` (and `private protected`) members of the assembly it came from.
 
 ### Extensive use of nested classed / structs
 > You can use [User Defined Script Overrides](#user-defined-script-overrides) to overcome this limitation
@@ -564,40 +453,6 @@ public static ObjectFromExternalAssemblyExtensions
 }
 ```
 
-### Changing class that implements internal interface can trigger compilation error
-> You can use [User Defined Script Overrides](#user-defined-script-overrides) to overcome this limitation
-
-> fixed in unreleased 1.5 - please get in touch if you need a copy before release
-
-If class is implementing interface that's defined in different file as internal (default for no access modifier) - then changes to that class will fail to compile.
-
-eg.
-```
-//file IInterface.cs
-interface IInterface { //default interface access-modifier is 'internal'
-   //declaration
-} 
-
-//file ClassImplementingIInterface.cs
-class ClassImplementingIInterface: IInterface {
-   //changing this class will cause CS0122 'IInterface' is inaccessible due to it's protection level
-}
-
-```
-
-> Quick workaround is to declare that interface as public
-> 
-
-### Changing class that accesses `private protected` members
-> You can use [User Defined Script Overrides](#user-defined-script-overrides) to overcome this limitation
-
-> fixed in unreleased 1.5 - please get in touch if you need a copy before release
-
-With C# 7.2 `private protected` access modifier was introduced. It works as `protected` access modifier in a sense that inherited classes can access it but. 
-Addition of `private` also limits it to same assembly. Your changes are technically compiled into separate assembly and at the moment trying to access `private protected` in changed code will produce compiler error.
-
-> Easiest workaround for now is to declare those `private protected` members as `protected`.
-
 ### Limited debugger support for Rider when using Unity 2019 and 2020
 Once breakpoint has been hit it'll stop asset from hot-reloading in that play-session. Newer Unity versions are supporting debugging.
 
@@ -605,7 +460,7 @@ Once breakpoint has been hit it'll stop asset from hot-reloading in that play-se
 Asset runs based on specific .NET functionality, IL2CPP builds will not be supported. Although as this is development workflow aid you can build your APK with Mono backend (android) and change later.
 
 ### Partial classes
-Experimental support (on by default). Potentially could have some performance implications as it's file-read heavy in current state. Can be disabled in options if needed.
+Supported. Potentially could have some performance implications as it's file-read heavy in current state.
 
 Your partial class file needs to share name with actual class. eg
 `public class PartialClass`
@@ -629,16 +484,7 @@ Live Script Reload
 + standalone extension priced at $35, or if you've already bought Fast Script Reload it's $5 upgrade
 
 ### Editor makes full reload on any change in playmode
-
-Unity Editor has an option to auto recompile changes. **For tool to work properly you want to have that either disabled or enabled only outside of playmode.**
-
-You can adjusted auto-reload at any time via `Edit -> Preferences -> Asset Pipeline -> Auto Refresh`.
-
-*Tool will also offer to disable auto-refresh on startup.*
-
-It's possible to set auto-refresh to enabled but only outside of playmode. Depending on editor version used this can be found in:
-- `Edit -> Preferences -> General -> Script Changes While Playing -> Recompile After Finished Playing`
-- or `Edit -> Preferences -> Asset Pipeline -> Auto Refresh -> Enabled Outside Playmode`
+Tool holds Unity's domain reload back while playing, Unity applies it after play mode ends. If you still see 'Reloading script assemblies' in play mode, please report it.
 
 ### VS Code shows console shows errors
 VS Code proj file (csproj) generate with NetFramework version 4.7.1. One of the plugin DLLs is targeting version 4.8.
@@ -691,17 +537,18 @@ This is down to reimporting 'Point' prefab. Right now plugin will make sure it's
 To fix please go to `FastScripReload\Examples\Point\Point.prefab` and search for 'Point' shader. 
 
 ### On Mac hot reload does not trigger when changing files
-It'd seem for some code editors on Mac file changes are not picked up. This seems to be down to editors not updating LastWrite property on save and file watcher can't pick up the change.
-Unfortunately right now only workaround is to use editor that does update it, eg VSCode.
+Editors that save by writing a temporary file and renaming it (eg Rider with 'safe write') are supported.
+If changes still aren't picked up, try `CustomPolling` in `Project Settings -> Fast Script Reload -> Advanced -> File Watcher implementation`.
 
 ### I removed FSR but my scripts are still not reloading
-FSR initially asks if you want to disable Unity auto-reload. If you select yes, then it'll let you know you should now trigger full reload with CTRL + R.
+Older FSR versions asked if you want to disable Unity auto-reload. If you select yes, then it'll let you know you should now trigger full reload with CTRL + R.
 That's a Unity setting and it does not change back when removing asset.
 
 > To change go to 'Edit -> Preferences -> Asset Pipeline -> Auto Refresh -> Enabled'
 
 ## Roadmap
 - ~~add Mac silicon support~~ (added with 2.0)
+- ~~hot reload generic methods and classes~~ (added with 2.0)
 - ~~add Mac/Linux support~~ (added with 1.1)
 - ~~add debugger support for hot-reloaded scripts~~ (added with 1.2)
 - ~~allow to add new fields (adjustable in Editor)~~ (added with 1.3)

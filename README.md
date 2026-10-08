@@ -23,11 +23,11 @@ And you don't have to adjust your code either, just import.
 Works with any code editor.
 
 ## Quickstart
-1) Download [latest FSR version](https://github.com/handzlikchris/FastScriptReload/releases/download/1.4-rc1/Fast.Script.Reload.unitypackage) and import to Unity
+1) Download [latest FSR version](https://github.com/pjako/FastScriptReload/releases/latest) and import to Unity
 > You can also install via package manager. Window -> Package Manager -> + -> Add package from Git url:
-> https://github.com/handzlikchris/FastScriptReload.git?path=Assets
+> https://github.com/pjako/FastScriptReload.git?path=Assets
 
-> Pulling other branches/commits can be done by appending branch name, eg https://github.com/handzlikchris/FastScriptReload.git?path=Assets#features/ai-code-rewrite-fixes
+> Pulling a specific version, branch or commit can be done by appending it, eg https://github.com/pjako/FastScriptReload.git?path=Assets#2.0.0
 3) Play
 3) Make Code Change
 4) See results
@@ -79,11 +79,9 @@ Biggest bit is additional memory used for your re-compiled code.
 Won't be visible unless you make 100s of changes in same play-session.
 
 ## Supports (Tested)
-- Windows / Mac (Intel editor version only) / Linux
-- Unity 2019.3
-- Unity 2020.3
-- Unity 2021.3
-- Unity 2022.2
+- Windows / Mac (Intel and Apple Silicon) / Linux
+- Unity 2022.3
+- Unity 6
 
 ## Documentation
 [Full documentation is available here](https://fastscriptreload.com/projects/fast-script-reload/documentation)
@@ -91,22 +89,19 @@ Won't be visible unless you make 100s of changes in same play-session.
 ## Few things to have in mind, limitations:
 * most limitations can be overcome with User Defined Script Overrides (see docs for more info)
 
-### Generic methods and classes won't be Hot-Reloaded
-Unfortunately generics will not be Hot-Reloaded, to workaround you'd need to move code to non-generic class / method.
+### Generic methods and classes
+Hot-Reloaded, with some exceptions for generic classes used with reference types (see docs).
 
 ### Creating new public methods
 Hot-reload for new methods will only work with private methods (only called by changed code)
 
-### Adding new fields (Experimental support added in 1.3)
-You can now add new fields and tweak them in editor! Minor limitations:
+### Adding new fields
+You can add new fields and tweak them in editor! Minor limitations:
 - outside classes can not call new fields added at runtime
 - new fields will only show in editor if they were already used (at least once)
 
 ### Extensive use of nested classed / structs
 If your code-base contains lots of nested classes - you may see more compilation errors.
-
-### Mac Silicon Editor version not supported
-On Mac only Intel Editor version is supported. For Silicon version logs will show that everything is fine but actual change will not happen at runtime
 
 ### Other minor limitations
 There are some other minor limitations, please consult full list
@@ -119,17 +114,16 @@ There are some other minor limitations, please consult full list
 - add debugger support for hot-reloaded scripts **(DONE, added with 1.2)**
 - allow to add new fields (adjustable in Editor) **(DONE, added with 1.3)**
 - editor mode support **(DONE, added with 1.4)**
+- Apple Silicon support **(DONE, added with 2.0)**
+- hot reload generic methods and classes **(DONE, added with 2.0)**
 - better compiler support to workaround limitations
 
 
 ### FAQ
 - My changes no longer automatically compile / reload
-> You probably allowed tool to change auto-reload to 'disabled' and have forgotten about it.
+> Since 2.0 FSR starts Unity's compilation itself when scripts are saved outside play mode, and after play mode for scripts changed while playing.
 >
-> You can reload changes manually with CTRL+R
->
-> or reenable auto-reload - please go to `Edit -> Preferences -> Asset Pipeline -> Auto Refresh`and set to `Enabled Outside of Playmode`.
-> This way FSR will work in playmode and Unity will do full recompile when you hit 'stop'.
+> Older versions offered to disable Unity's auto refresh, you can turn it back on via `Edit -> Preferences -> Asset Pipeline -> Auto Refresh`.
 
 - When importing I'm getting error: 'Unable to update following assemblies: (...)/ImmersiveVRTools.Common.Runtime.dll'
 > This happens occasionally, especially on upgrade between versions. It's harmless error that'll go away on play mode.
