@@ -823,8 +823,11 @@ Workaround will search in all folders (under project root) and will use first fo
                 }
                 return;
             }
-            
-            var isUsingCustomFileWatchers = (FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault() 
+
+            //Only runs once per domain reload, called here as this is when hot reload becomes active (play mode, or editor mode if enabled)
+            DynamicAssemblyCompiler.WarmUpInBackground();
+
+            var isUsingCustomFileWatchers =(FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault() 
                                             == FileWatcherImplementation.CustomPolling;
             if (!isUsingCustomFileWatchers)
             {

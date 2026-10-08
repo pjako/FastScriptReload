@@ -37,6 +37,14 @@ namespace FastScriptReload.Editor.Compilation
             
             return compileResult;
         }
+
+        /// <summary>Prepares the compiler on a background thread, so the first hot reload is as fast as the following ones</summary>
+        public static void WarmUpInBackground()
+        {
+#if !FastScriptReload_CompileViaMCS
+            DotnetExeDynamicCompilation.WarmUpInBackground();
+#endif
+        }
     }
 
     public class CompileResult

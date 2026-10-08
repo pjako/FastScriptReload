@@ -8,6 +8,7 @@ using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 using FastScriptReload.Editor.AssemblyPostProcess;
 using FastScriptReload.Runtime;
 using HarmonyLib;
@@ -82,6 +83,35 @@ namespace FastScriptReload.Editor.Compilation
             _analyzers.Count == 0;
 #endif
 
+        //Static state is reset by a domain reload, which is also when the warm-up is lost
+        private static int _isWarmUpStarted;
+
+        public static void WarmUpInBackground()
+        {
+            if (Interlocked.Exchange(ref _isWarmUpStarted, 1) == 1)
+            {
+                return;
+            }
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    var sw = Stopwatch.StartNew();
+                    _ = ProjectTypeCache.AllTypesInNonDynamicGeneratedAssemblies;
+                    if (IsInProcessCompilationEnabled)
+                    {
+                        InProcessRoslynCompilation.WarmUp(ActiveScriptCompilationDefines, ResolveReferencePaths(new Dictionary<string, string>()));
+                    }
+                    LoggerScoped.LogDebug($"Hot reload warm-up took {sw.ElapsedMilliseconds}ms");
+                }
+                catch (Exception e)
+                {
+                    LoggerScoped.LogDebug($"Hot reload warm-up failed, first hot reload will take longer. {e}");
+                }
+            });
+        }
+
         private static string CreateProjectTempFolder()
         {
             // One folder per project, several editors can be open at once and must not delete each other's files
@@ -155,7 +185,9 @@ namespace FastScriptReload.Editor.Compilation
 #endif
 
                 var originalAssemblyPathToAsmWithInternalsVisibleToCompiled = PerfMeasure.Elapsed(
-                    () => CreateAssemblyCopiesWithInternalsVisibleTo(createSourceCodeCombinedResult, asmName),
+                    () => IsInProcessCompilationEnabled && InProcessRoslynCompilation.CanIgnoreAccessibility
+                        ? new Dictionary<string, string>() //Compiled with accessibility checks disabled, internals don't need to be made visible
+                        : CreateAssemblyCopiesWithInternalsVisibleTo(createSourceCodeCombinedResult, asmName),
                     out var createInternalVisibleToAsmElapsedMilliseconds);
 
                 var shouldAddUnsafeFlag = createSourceCodeCombinedResult.SourceCode.Contains("unsafe"); //TODO: not ideal as 'unsafe' can be part of comment, not code. But compiling with that flag in more cases shouldn't cause issues
