@@ -74,6 +74,9 @@ namespace FastScriptReload.Editor
         private readonly ConcurrentQueue<Action> _mainThreadActions = new ConcurrentQueue<Action>();
         //Only one reload at a time, otherwise an older compilation finishing last could overwrite newer changes. Main thread only
         private bool _isHotReloadInProgress;
+        //Set from file watcher threads
+        private volatile bool _isUnityRefreshRequested;
+        private volatile bool _hadFileChangesInPlayMode;
 
         private bool _assemblyChangesLoaderResolverResolutionAlreadyCalled;
         private bool _isEditorModeHotReloadEnabled;
@@ -82,7 +85,11 @@ namespace FastScriptReload.Editor
 
         private void OnWatchedFileChange(object source, FileSystemEventArgs e)
         {
-            if (ShouldIgnoreFileChange()) return;
+            if (ShouldIgnoreFileChange())
+            {
+                RequestUnityRefresh();
+                return;
+            }
 
             var filePathToUse = e.FullPath;
             if (!File.Exists(filePathToUse))
@@ -96,6 +103,11 @@ namespace FastScriptReload.Editor
 
         public void AddFileChangeToProcess(string filePath)
         {
+            if (_lastPlayModeStateChange == PlayModeStateChange.EnteredPlayMode)
+            {
+                _hadFileChangesInPlayMode = true;
+            }
+
             if (!File.Exists(filePath))
             {
                 LoggerScoped.LogWarning($"Specified file: '{filePath}' does not exist. Hot-Reload will not be performed.");
@@ -491,33 +503,22 @@ namespace FastScriptReload.Editor
             }
 
             _isEditorModeHotReloadEnabled = (bool)FastScriptReloadPreference.EnableExperimentalEditorHotReloadSupport.GetEditorPersistedValueOrDefault();
-            if (_lastPlayModeStateChange == PlayModeStateChange.ExitingPlayMode && Instance._fileWatchers.Any())
+
+            //File watchers also run outside play mode, changes there are compiled by Unity, see RequestUnityRefresh
+            EnsureInitialized();
+            if (_isUnityRefreshRequested)
             {
-                ClearFileWatchers();
+                RefreshUnityOnceChangesSettled();
             }
-            
+
             if (!_isEditorModeHotReloadEnabled && !EditorApplication.isPlaying)
             {
                 return;
             }
 
-            if (_isEditorModeHotReloadEnabled)
-            {
-                EnsureInitialized();
-            }
-            else if (_lastPlayModeStateChange == PlayModeStateChange.EnteredPlayMode)
-            {
+            //Only runs once per domain reload, here as this is when hot reload becomes active
+            DynamicAssemblyCompiler.WarmUpInBackground();
 
-                EnsureInitialized();
-
-                // if (_lastPlayModeStateChange != PlayModeStateChange.ExitingPlayMode && Application.isPlaying && Instance._fileWatchers.Count == 0 && FastScriptReloadPreference.FileWatcherSetupEntries.GetElementsTyped().Count > 0)
-                // {
-                //     LoggerScoped.LogWarning("Reinitializing file-watchers as defined configuration does not match current instance setup. If hot reload still doesn't work you'll need to reset play session.");
-                //     ClearFileWatchers();
-                //     EnsureInitialized();
-                // }
-            }
-            
             AssignConfigValuesThatCanNotBeAccessedOutsideOfMainThread();
 
             if (!_assemblyChangesLoaderResolverResolutionAlreadyCalled)
@@ -755,20 +756,66 @@ namespace FastScriptReload.Editor
         {
             Instance._lastPlayModeStateChange = obj;
 
-            if ((bool)FastScriptReloadPreference.IsForceLockAssembliesViaCode.GetEditorPersistedValueOrDefault())
+            //Unity may compile changed scripts while playing (Auto Refresh, 'Recompile And Continue Playing'), the domain reload
+            //that follows would end the play session. Hot reload applies the changes instead, Unity's reload happens after playing
+            if (obj == PlayModeStateChange.EnteredPlayMode && IsHotReloadEnabled())
             {
-                if (obj == PlayModeStateChange.EnteredPlayMode)
-                {
-                    EditorApplication.LockReloadAssemblies();
-                    _wasLockReloadAssembliesCalled = true;
-                }
+                _hadFileChangesInPlayMode = false;
+                EditorApplication.LockReloadAssemblies();
+                _wasLockReloadAssembliesCalled = true;
             }
-            
+
             if(obj == PlayModeStateChange.EnteredEditMode && _wasLockReloadAssembliesCalled)
             {
                 EditorApplication.UnlockReloadAssemblies();
                 _wasLockReloadAssembliesCalled = false;
             }
+
+            //Changes applied by hot reload still have to be compiled by Unity
+            if (obj == PlayModeStateChange.EnteredEditMode && _hadFileChangesInPlayMode)
+            {
+                _hadFileChangesInPlayMode = false;
+                _isUnityRefreshRequested = true;
+            }
+        }
+
+        private static bool IsHotReloadEnabled()
+        {
+            return (bool)FastScriptReloadPreference.EnableAutoReloadForChangedFiles.GetEditorPersistedValueOrDefault()
+                   || (bool)FastScriptReloadPreference.EnableOnDemandReload.GetEditorPersistedValueOrDefault();
+        }
+
+        /// <summary>
+        /// Unity only looks for changed scripts when its window gets focus (Auto Refresh), changes saved while it's already focused
+        /// or in the background would wait for a manual refresh. File watchers see them right away.
+        /// </summary>
+        public void RequestUnityRefresh()
+        {
+            lock (_dynamicFileHotReloadStateEntriesLock)
+            {
+                _lastFileChangeOn = DateTime.UtcNow;
+            }
+            _isUnityRefreshRequested = true;
+        }
+
+        private void RefreshUnityOnceChangesSettled()
+        {
+            if (EditorApplication.isPlayingOrWillChangePlaymode || EditorApplication.isCompiling || EditorApplication.isUpdating)
+            {
+                return;
+            }
+
+            var settleForMilliseconds = (int)FastScriptReloadPreference.ReloadAfterChangesSettleForNMilliseconds.GetEditorPersistedValueOrDefault();
+            lock (_dynamicFileHotReloadStateEntriesLock)
+            {
+                if ((DateTime.UtcNow - _lastFileChangeOn).TotalMilliseconds < settleForMilliseconds)
+                {
+                    return;
+                }
+            }
+
+            _isUnityRefreshRequested = false;
+            AssetDatabase.Refresh();
         }
         
                 private static bool TryWorkaroundForUnityFileWatcherBug(FileSystemEventArgs e, ref string filePathToUse)
@@ -820,9 +867,6 @@ Workaround will search in all folders (under project root) and will use first fo
                 }
                 return;
             }
-
-            //Only runs once per domain reload, called here as this is when hot reload becomes active (play mode, or editor mode if enabled)
-            DynamicAssemblyCompiler.WarmUpInBackground();
 
             var isUsingCustomFileWatchers =(FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault() 
                                             == FileWatcherImplementation.CustomPolling;
