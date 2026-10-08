@@ -226,7 +226,11 @@ public class CustomFileWatcher : EditorWindow
 
     private static void RecordChange(string path)
     {
-        if (FastScriptReloadManager.Instance.ShouldIgnoreFileChange()) return;
+        if (FastScriptReloadManager.Instance.ShouldIgnoreFileChange())
+        {
+            FastScriptReloadManager.Instance.RequestUnityRefresh();
+            return;
+        }
 
         lock (ListLock)
         {
