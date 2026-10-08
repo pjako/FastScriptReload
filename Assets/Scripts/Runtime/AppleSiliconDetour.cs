@@ -18,8 +18,61 @@ namespace FastScriptReload.Runtime
         public static readonly bool IsRequired =
             RuntimeInformation.IsOSPlatform(OSPlatform.OSX) && RuntimeInformation.ProcessArchitecture == Architecture.Arm64;
 
+#if UNITY_EDITOR
+        // Unity doesn't resolve DllImport("FsrJitWrite") for plugins in packages (Unity 6.6), the dylib is loaded from its path instead
+        private const string NativeHelperGuid = "b573386b31404639a0492fda1a937d38";
+        private const string LibSystem = "/usr/lib/libSystem.B.dylib";
+        private const int RTLD_NOW = 2;
+
+        private delegate void WriteCode(IntPtr destination, byte[] source, UIntPtr length);
+        private static WriteCode _writeCode;
+
+        [DllImport(LibSystem)]
+        static extern IntPtr dlopen(string path, int mode);
+
+        [DllImport(LibSystem)]
+        static extern IntPtr dlsym(IntPtr handle, string symbol);
+
+        [DllImport(LibSystem)]
+        static extern IntPtr dlerror();
+
+        static void fsr_write_code(IntPtr destination, byte[] source, UIntPtr length)
+        {
+            if (_writeCode == null)
+            {
+                _writeCode = LoadWriteCode();
+            }
+
+            _writeCode(destination, source, length);
+        }
+
+        static WriteCode LoadWriteCode()
+        {
+            var assetPath = UnityEditor.AssetDatabase.GUIDToAssetPath(NativeHelperGuid);
+            if (string.IsNullOrEmpty(assetPath))
+            {
+                throw new DllNotFoundException($"FsrJitWrite.dylib (guid: {NativeHelperGuid}) wasn't found in the project");
+            }
+
+            var path = System.IO.Path.GetFullPath(UnityEditor.FileUtil.GetPhysicalPath(assetPath));
+            var handle = dlopen(path, RTLD_NOW);
+            if (handle == IntPtr.Zero)
+            {
+                throw new DllNotFoundException($"Unable to load '{path}': {Marshal.PtrToStringAnsi(dlerror())}");
+            }
+
+            var function = dlsym(handle, "fsr_write_code");
+            if (function == IntPtr.Zero)
+            {
+                throw new EntryPointNotFoundException($"'fsr_write_code' not found in '{path}'");
+            }
+
+            return Marshal.GetDelegateForFunctionPointer<WriteCode>(function);
+        }
+#else
         [DllImport("FsrJitWrite")]
         static extern void fsr_write_code(IntPtr destination, byte[] source, UIntPtr length);
+#endif
 
         public static void DetourMethod(MethodBase original, MethodBase replacement)
         {

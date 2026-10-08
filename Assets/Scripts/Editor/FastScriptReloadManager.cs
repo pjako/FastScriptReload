@@ -47,6 +47,7 @@ namespace FastScriptReload.Editor
         public event Action<List<DynamicFileHotReloadState>> HotReloadSucceeded;
 
         private bool _wasLockReloadAssembliesCalled;
+        private bool _wasRunInBackgroundEnabled;
         private PlayModeStateChange _lastPlayModeStateChange;
         private List<IDisposable> _fileWatchers = new List<IDisposable>();
         private IEnumerable<string> _currentFileExclusions;
@@ -634,6 +635,21 @@ namespace FastScriptReload.Editor
                 _hadFileChangesInPlayMode = false;
                 EditorApplication.LockReloadAssemblies();
                 _wasLockReloadAssembliesCalled = true;
+            }
+
+            //Unity pauses play mode while another app is focused, changes saved in the IDE would only show after clicking into Unity.
+            //In the editor Application.runInBackground writes through to Player Settings, it's turned back off when leaving play mode
+            if (obj == PlayModeStateChange.EnteredPlayMode && IsHotReloadEnabled() && !Application.runInBackground
+                && (bool)FastScriptReloadPreference.KeepPlayModeRunningInBackground.GetEditorPersistedValueOrDefault())
+            {
+                Application.runInBackground = true;
+                _wasRunInBackgroundEnabled = true;
+            }
+
+            if (obj == PlayModeStateChange.ExitingPlayMode && _wasRunInBackgroundEnabled)
+            {
+                Application.runInBackground = false;
+                _wasRunInBackgroundEnabled = false;
             }
 
             if(obj == PlayModeStateChange.EnteredEditMode && _wasLockReloadAssembliesCalled)

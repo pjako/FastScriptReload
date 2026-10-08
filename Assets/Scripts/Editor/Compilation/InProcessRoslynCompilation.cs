@@ -24,6 +24,21 @@ namespace FastScriptReload.Editor.Compilation
 
         private static readonly Func<CSharpCompilationOptions, CSharpCompilationOptions> WithIgnoreAccessibility = CreateWithIgnoreAccessibility();
 
+        // FSR's Harmony embeds public copies of types like ReadOnlySpan<T>, they clash with mscorlib's (Unity 6.6+).
+        // Behind an alias its types are only visible through 'extern alias', so code not using Harmony doesn't see them
+        private const string HarmonyFileName = "0Harmony.dll";
+        public const string HarmonyReferenceAlias = "FastScriptReloadHarmony";
+
+        public static bool IsReferenceAliased(string referencePath, bool sourceUsesHarmony)
+        {
+            return !sourceUsesHarmony && string.Equals(Path.GetFileName(referencePath), HarmonyFileName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public static bool UsesHarmony(string sourceCode)
+        {
+            return sourceCode.Contains("HarmonyLib");
+        }
+
         /// <summary>
         /// Code can use internal and private members of other assemblies without them being made visible first.
         /// Mono doesn't enforce member access at runtime, so this only lifts the compiler's checks.
@@ -137,7 +152,11 @@ namespace FastScriptReloadWarmUp
                 compilationOptions = WithIgnoreAccessibility(compilationOptions.WithMetadataImportOptions(MetadataImportOptions.All));
             }
 
-            return CSharpCompilation.Create(assemblyName, syntaxTrees, referencePaths.Select(GetReference), compilationOptions);
+            var sourceUsesHarmony = sourceFiles.Any(f => UsesHarmony(f.SourceCode));
+            var references = referencePaths.Select(path => IsReferenceAliased(path, sourceUsesHarmony)
+                ? GetReference(path).WithAliases(new[] { HarmonyReferenceAlias })
+                : GetReference(path));
+            return CSharpCompilation.Create(assemblyName, syntaxTrees, references, compilationOptions);
         }
 
         private static EmitOptions CreateEmitOptions(string pdbPath)

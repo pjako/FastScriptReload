@@ -65,12 +65,11 @@ namespace FastScriptReload.Editor.Compilation
 
             //needs to be set from main thread
             ActiveScriptCompilationDefines = EditorUserBuildSettings.activeScriptCompilationDefines;
-            AssemblyCsharpFullPath = SessionStateCache.GetOrCreateString(
-	            $"FSR:AssemblyCsharpFullPath", 
-	            () => AssetDatabase.FindAssets("Microsoft.CSharp")
-					            .Select(g => new System.IO.FileInfo(UnityEngine.Application.dataPath + "/../" + AssetDatabase.GUIDToAssetPath(g)))
-					            .First(fi => fi.Name.ToLower() == "Microsoft.CSharp.dll".ToLower()).FullName
-	        );
+            //Not cached in session state, the file moves when FSR is reinstalled (eg from Assets to a package).
+            //Package paths are virtual (Packages/<name>/...), the physical one is resolved
+            AssemblyCsharpFullPath = AssetDatabase.FindAssets("Microsoft.CSharp")
+                .Select(g => Path.GetFullPath(FileUtil.GetPhysicalPath(AssetDatabase.GUIDToAssetPath(g))))
+                .FirstOrDefault(path => string.Equals(Path.GetFileName(path), "Microsoft.CSharp.dll", StringComparison.OrdinalIgnoreCase));
 
         }
         
@@ -394,6 +393,11 @@ namespace FastScriptReload.Editor.Compilation
         {
 	        //TODO: check .net4.5 backend not breaking?
 	        //ThisRewriters will cast to dynamic - if using .NET Standard 2.1 - reference is required
+	        if (string.IsNullOrEmpty(AssemblyCsharpFullPath) || !File.Exists(AssemblyCsharpFullPath))
+	        {
+	            LoggerScoped.LogDebug("Microsoft.CSharp.dll not found, code using 'dynamic' won't compile");
+	            return;
+	        }
 	        referencesToAdd.Add(AssemblyCsharpFullPath);
 	        // referencesToAdd.Add(@"C:\Program Files\Unity\Hub\Editor\2021.3.12f1\Editor\Data\UnityReferenceAssemblies\unity-4.8-api\Microsoft.CSharp.dll");
         }
