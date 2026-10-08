@@ -124,7 +124,7 @@ namespace FastScriptReload.Runtime
                                     Memory.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
                                 }
                             }
-                            else 
+                            else if (createdTypeMethodToUpdate.Name != ON_HOT_RELOAD_METHOD_NAME) //Added OnScriptHotReload is called without a detour, see FindAndExecuteOnScriptHotReload
                             {
                                 LoggerScoped.LogWarning($"Method: {createdTypeMethodToUpdate.FullDescription()} does not exist in initially compiled type: {matchingTypeInExistingAssemblies.FullName}. " +
                                                  $"Adding new methods at runtime is not fully supported. \r\n" +
@@ -194,42 +194,45 @@ namespace FastScriptReload.Runtime
             var onScriptHotReloadFnForType = originalType.GetMethod(ON_HOT_RELOAD_METHOD_NAME, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
             if (onScriptHotReloadFnForType != null)
             {
-                ExecuteFnOnMainThread(originalType, onScriptHotReloadFnForType);
+                ExecuteFnOnMainThread(originalType, instance => onScriptHotReloadFnForType.Invoke(instance, null));
             }
             else
-            { 
+            {
                 //When OnScriptHotReload method is not present in original type reflection can not use method from new type (as instance types are not matching and will cause exception)
-                //creating dynamic method and dotouring that solves the issue
-                //On some 2020 Unity versions, eg 2020.3.27f DynamicMethod can not be resolved. Using reflection to ensure it can be compiled and potentially run if methods exist
-                
                 var onScriptHotReloadFnForCreatedType = detourType.GetMethod(ON_HOT_RELOAD_METHOD_NAME, BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (onScriptHotReloadFnForCreatedType != null)
                 {
-                    //PERF: could potentially cache, negligible overhead
-                    var dynamicMethodType = Type.GetType("System.Reflection.Emit.DynamicMethod");
-                    if (dynamicMethodType == null)
+                    if (onScriptHotReloadFnForCreatedType.GetParameters().Length > 0)
                     {
-                        LoggerScoped.LogWarning($"Unable to find DynamicMethod, added {ON_HOT_RELOAD_METHOD_NAME} won't be called. Make sure to add method before initial compilation.");
+                        LoggerScoped.LogWarning($"Added {ON_HOT_RELOAD_METHOD_NAME} on type: {originalType.Name} has parameters, it won't be called.");
                         return;
                     }
-                    
-                    var dynamicMethodCtor = dynamicMethodType.GetConstructor(new Type[] { typeof(string), typeof(Type), typeof(Type[]) });
-                    var dynamicMethodDynamicallyAdded = (MethodInfo)dynamicMethodCtor.Invoke(new object[] { ON_HOT_RELOAD_METHOD_NAME + "_DynamicallyAdded", typeof(void), new Type[] { } });
-                
-                    var getILGeneratorMethod = dynamicMethodType.GetMethod("GetILGenerator", new Type[] { });
-                    var gen = getILGeneratorMethod.Invoke(dynamicMethodDynamicallyAdded, new object[]{ });
-                
-                    var emitMethod = gen.GetType().GetMethod("Emit", new [] { typeof(OpCode) });
-                    emitMethod.Invoke(gen, new object[] { OpCodes.Ret }); //simple return to ensure IL is valid
-                    
-                    Memory.DetourMethod(dynamicMethodDynamicallyAdded, onScriptHotReloadFnForCreatedType);
 
-                    ExecuteFnOnMainThread(originalType, dynamicMethodDynamicallyAdded);
+                    var callOnInstanceOfOriginalType = CreateCallOnInstanceOfOriginalType(onScriptHotReloadFnForCreatedType);
+                    ExecuteFnOnMainThread(originalType, callOnInstanceOfOriginalType);
                 }
             }
         }
 
-        private static void ExecuteFnOnMainThread(Type originalType, MethodInfo onScriptHotReloadFn)
+        //Calls the new type's method with an instance of the original type as 'this', the same way detoured methods run.
+        //Done in IL as reflection checks the instance type. Doesn't need a detour, so it also works where those aren't possible (Apple Silicon)
+        private static Action<object> CreateCallOnInstanceOfOriginalType(MethodInfo instanceMethod)
+        {
+            var dynamicMethod = new DynamicMethod(instanceMethod.Name + "_CalledOnOriginalInstance", typeof(void), new[] { typeof(object) },
+                typeof(AssemblyChangesLoader).Module, skipVisibility: true);
+            var il = dynamicMethod.GetILGenerator();
+            il.Emit(OpCodes.Ldarg_0);
+            il.Emit(OpCodes.Call, instanceMethod);
+            if (instanceMethod.ReturnType != typeof(void))
+            {
+                il.Emit(OpCodes.Pop);
+            }
+            il.Emit(OpCodes.Ret);
+
+            return (Action<object>)dynamicMethod.CreateDelegate(typeof(Action<object>));
+        }
+
+        private static void ExecuteFnOnMainThread(Type originalType, Action<object> onScriptHotReloadFn)
         {
             UnityMainThreadDispatcher.Instance.Enqueue(() =>
             {
@@ -241,10 +244,14 @@ namespace FastScriptReload.Runtime
                        //TODO: perf - could find them in different way?
 #if UNITY_6000_0_OR_NEWER // added new FindObjectsByType
                 foreach (var instanceOfType in UnityEngine.Object.FindObjectsByType(originalType, FindObjectsSortMode.None))
-                    onScriptHotReloadFn.Invoke(instanceOfType, null);
+                {
+                    onScriptHotReloadFn(instanceOfType);
+                }
 #elif UNITY_2021_1_OR_NEWER // keeping FindObjectOfType for older unity versions
                 foreach (var instanceOfType in UnityEngine.Object.FindObjectsOfType(originalType))
-                    onScriptHotReloadFn.Invoke(instanceOfType, null);
+                {
+                    onScriptHotReloadFn(instanceOfType);
+                }
 #endif
             });
         }
