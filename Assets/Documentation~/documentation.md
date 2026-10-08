@@ -323,8 +323,8 @@ To view all exclusions:
 #### via class attribute
 You can also add `[PreventHotReload]` attribute to a class to prevent hot reload for that class.
 
-### Batch script changes and reload every N seconds
-Script will batch all your playmode changes and Hot-Reload them in bulk every 3 seconds - you can change duration from 'Reload' options page.
+### Reload after no further changes for N milliseconds
+Changed scripts are Hot-Reloaded as soon as no further changes come in for 100 milliseconds, so files saved together (eg 'save all' or a refactoring) are compiled in one go. You can change the duration from 'Reload' options page.
 
 ### Disable added/removed fields check
 By default if you add / remove fields, tool will not redirect method calls for recompiled class.
