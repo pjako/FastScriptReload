@@ -73,6 +73,15 @@ namespace FastScriptReload.Editor.Compilation
             };
         }
 
+        // Roslyn analyzers and source generators are built against Microsoft.CodeAnalysis and can't be loaded into the renamed
+        // copy used in-process, so projects with analyzers keep compiling with the dotnet compiler
+        private static bool IsInProcessCompilationEnabled =>
+#if FastScriptReload_CompileViaDotnetExe
+            false;
+#else
+            _analyzers.Count == 0;
+#endif
+
         private static string CreateProjectTempFolder()
         {
             // One folder per project, several editors can be open at once and must not delete each other's files
@@ -150,12 +159,27 @@ namespace FastScriptReload.Editor.Compilation
                     out var createInternalVisibleToAsmElapsedMilliseconds);
 
                 var shouldAddUnsafeFlag = createSourceCodeCombinedResult.SourceCode.Contains("unsafe"); //TODO: not ideal as 'unsafe' can be part of comment, not code. But compiling with that flag in more cases shouldn't cause issues
-                var rspFileContent = GenerateCompilerArgsRspFileContents(outLibraryPath, sourceCodeCombinedFilePath, assemblyAttributeFilePath,
-                    originalAssemblyPathToAsmWithInternalsVisibleToCompiled, shouldAddUnsafeFlag);
-                CreateFileAndTrackAsCleanup(rspFile, rspFileContent, _createdFilesToCleanUp);
-                CreateFileAndTrackAsCleanup(assemblyAttributeFilePath, DynamicallyCreatedAssemblyAttributeSourceCode, _createdFilesToCleanUp);
+                int exitCode;
+                List<string> outputMessages;
+                if (IsInProcessCompilationEnabled)
+                {
+                    var sourceFiles = new List<InProcessRoslynCompilation.SourceFile>
+                    {
+                        new InProcessRoslynCompilation.SourceFile(sourceCodeCombinedFilePath, createSourceCodeCombinedResult.SourceCode),
+                        new InProcessRoslynCompilation.SourceFile(assemblyAttributeFilePath, DynamicallyCreatedAssemblyAttributeSourceCode)
+                    };
+                    exitCode = InProcessRoslynCompilation.Compile(asmName, outLibraryPath, sourceFiles, ActiveScriptCompilationDefines,
+                        ResolveReferencePaths(originalAssemblyPathToAsmWithInternalsVisibleToCompiled), shouldAddUnsafeFlag, out outputMessages);
+                }
+                else
+                {
+                    var rspFileContent = GenerateCompilerArgsRspFileContents(outLibraryPath, sourceCodeCombinedFilePath, assemblyAttributeFilePath,
+                        originalAssemblyPathToAsmWithInternalsVisibleToCompiled, shouldAddUnsafeFlag);
+                    CreateFileAndTrackAsCleanup(rspFile, rspFileContent, _createdFilesToCleanUp);
+                    CreateFileAndTrackAsCleanup(assemblyAttributeFilePath, DynamicallyCreatedAssemblyAttributeSourceCode, _createdFilesToCleanUp);
 
-                var exitCode = ExecuteDotnetExeCompilation(_dotnetExePath, _cscDll, rspFile, outLibraryPath, out var outputMessages);
+                    exitCode = ExecuteDotnetExeCompilation(_dotnetExePath, _cscDll, rspFile, outLibraryPath, out outputMessages);
+                }
 
                 var compiledAssembly = Assembly.LoadFrom(outLibraryPath);
                 return new CompileResult(outLibraryPath, outputMessages, exitCode, compiledAssembly, createSourceCodeCombinedResult.SourceCode,
@@ -307,6 +331,15 @@ You can also:
             return assemblies;
         }
 
+        private static List<string> ResolveReferencePaths(Dictionary<string, string> originalAssemblyPathToAsmWithInternalsVisibleToCompiled)
+        {
+            return ResolveReferencesToAdd(new List<string>())
+                .Select(referenceToAdd => originalAssemblyPathToAsmWithInternalsVisibleToCompiled.TryGetValue(referenceToAdd, out var asmWithInternalsVisibleTo)
+                    ? asmWithInternalsVisibleTo //Changed assembly have InternalsVisibleTo added to it to avoid any issues where types are defined internal
+                    : referenceToAdd)
+                .ToList();
+        }
+
         private static string GenerateCompilerArgsRspFileContents(string outLibraryPath, string sourceCodeCombinedFilePath, string assemblyAttributeFilePath,
             Dictionary<string, string> originalAssemblyPathToAsmWithInternalsVisibleToCompiled, bool addUnsafeFlag)
         {
@@ -319,17 +352,9 @@ You can also:
                 rspContents.AppendLine($"-define:{symbol}");
             }
 
-            foreach (var referenceToAdd in ResolveReferencesToAdd(new List<string>()))
+            foreach (var referencePath in ResolveReferencePaths(originalAssemblyPathToAsmWithInternalsVisibleToCompiled))
             {
-                if (originalAssemblyPathToAsmWithInternalsVisibleToCompiled.TryGetValue(referenceToAdd, out var asmWithInternalsVisibleTo))
-                {
-                    //Changed assembly have InternalsVisibleTo added to it to avoid any issues where types are defined internal
-                    rspContents.AppendLine($"-r:\"{asmWithInternalsVisibleTo}\"");
-                }
-                else
-                {
-                    rspContents.AppendLine($"-r:\"{referenceToAdd}\"");
-                }
+                rspContents.AppendLine($"-r:\"{referencePath}\"");
             }
 
             foreach (var analyzer in _analyzers)
