@@ -24,8 +24,6 @@ namespace FastScriptReload.Editor.Compilation
     public class DynamicCompilationBase
     {
         public static bool DebugWriteRewriteReasonAsComment;
-	    public static bool LogHowToFixMessageOnCompilationError;
-	    public static bool EnableExperimentalThisCallLimitationFix;
         public static List<string> ReferencesExcludedFromHotReload = new List<string>();
 
         public const string DebuggingInformationComment = 
@@ -45,7 +43,7 @@ namespace FastScriptReload.Editor.Compilation
 //    - add a function breakpoint in your IDE (this way you won't have to re-add it every time)
 //
 // Tool can automatically open dynamically-compiled code file every time to make setting breakpoints easier.
-// You can adjust that behaviour via 'Window -> FastScriptReload -> Start Screen -> Debugging -> Do not auto-open generated cs file'.
+// You can adjust that behaviour via 'Project Settings -> Fast Script Reload -> Advanced -> Auto-open generated source file for debugging'.
 //
 // You can always open generated file when needed by clicking link in console, eg.
 // 'FSR: Files: FunctionLibrary.cs changed (click here to debug [in bottom details pane]) - compilation (took 240ms)'
@@ -90,10 +88,7 @@ namespace FastScriptReload.Editor.Compilation
                     })
                     .ToList();
 
-            if (FastScriptReloadManager.Instance.IsPartialClassSupportEnabled)
-            {
-                trees = trees.MergePartials(definedPreprocessorSymbols).ToList();
-            }
+            trees = trees.MergePartials(definedPreprocessorSymbols).ToList();
 
             // It's important to check whether the compiler was able to correctly interpret the original code.
             // When the compiler encounters errors, it actually continues and still produces a tree.
@@ -183,11 +178,9 @@ namespace FastScriptReload.Editor.Compilation
                 }
 
                 //WARN: application order is important, eg ctors need to happen before class names as otherwise ctors will not be recognised as ctors
-                if (FastScriptReloadManager.Instance.EnableExperimentalThisCallLimitationFix)
-                {
-					root = new ThisCallRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
-					root = new ThisAssignmentRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
-                }
+                //'this' is passed as the original type, the class it's compiled in is renamed (eg Graph__Patched_)
+                root = new ThisCallRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
+                root = new ThisAssignmentRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
 
                 if (FastScriptReloadManager.Instance.AssemblyChangesLoaderEditorOptionsNeededInBuild.EnableExperimentalAddedFieldsSupport)
                 {
@@ -331,10 +324,8 @@ namespace FastScriptReload.Editor.Compilation
                 .Where(r => !ReferencesExcludedFromHotReload.Any(rTe => r.EndsWith(rTe)))
                 .ToList();
 
-            if (EnableExperimentalThisCallLimitationFix || FastScriptReloadManager.Instance.AssemblyChangesLoaderEditorOptionsNeededInBuild.EnableExperimentalAddedFieldsSupport)
-            {
-	            IncludeMicrosoftCsharpReferenceToSupportDynamicKeyword(referencesToAdd);
-            }
+            //'this' rewrites and added fields can use 'dynamic'
+            IncludeMicrosoftCsharpReferenceToSupportDynamicKeyword(referencesToAdd);
 
             return referencesToAdd;
         }

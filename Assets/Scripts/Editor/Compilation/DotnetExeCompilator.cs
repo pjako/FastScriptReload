@@ -26,6 +26,7 @@ namespace FastScriptReload.Editor.Compilation
         private static string _dotnetExePath;
         private static string _cscDll;
         private static string _tempFolder;
+        private static bool _isHowToFixMessageLogged;
 
         private static string ApplicationContentsPath = EditorApplication.applicationContentsPath;
         private static readonly List<string> _createdFilesToCleanUp = new List<string>();
@@ -229,8 +230,10 @@ namespace FastScriptReload.Editor.Compilation
                 LoggerScoped.LogError($"Compilation error: temporary files were not removed so they can be inspected: "
                                + string.Join(", ", _createdFilesToCleanUp
                                    .Select(f => $"<a href=\"{f}\" line=\"1\">{f}</a>")));
-                if (LogHowToFixMessageOnCompilationError)
+                //Instructions are long, once per session is enough
+                if (!_isHowToFixMessageLogged)
                 {
+                    _isHowToFixMessageLogged = true;
                     LoggerScoped.LogWarning($@"HOW TO FIX - INSTRUCTIONS:
 
 1) Open file that caused issue by looking at error log starting with: 'FSR: Compilation error: temporary files were not removed so they can be inspected: '. And click on file path to open.
@@ -256,8 +259,7 @@ You can also:
 1) Look at 'limitation' section in the docs - which will explain bit more around limitations and workarounds
 2) Move some of the code that you want to work on to different file - compilation happens on whole file, if you have multiple types there it could increase the chance of issues
 3) Have a look at compilation error, it shows error line (in the '*.SourceCodeCombined.cs' file, it's going to be something that compiler does not accept, likely easy to spot. To workaround you can change that part of code in original file. It's specific patterns that'll break it.
-
-*If you want to prevent that message from reappearing please go to Window -> Fast Script Reload -> Start Screen -> Logging -> tick off 'Log how to fix message on compilation error'*");
+");
 
                 }
 

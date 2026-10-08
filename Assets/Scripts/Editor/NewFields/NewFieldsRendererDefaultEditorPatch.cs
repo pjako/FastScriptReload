@@ -18,32 +18,29 @@ namespace FastScriptReload.Editor.NewFields
         
         static NewFieldsRendererDefaultEditorPatch()
         {
-            if ((bool)FastScriptReloadPreference.EnableExperimentalAddedFieldsSupport.GetEditorPersistedValueOrDefault())
+            if (AppleSiliconDetour.IsRequired)
             {
-                if (AppleSiliconDetour.IsRequired)
-                {
-                    // Harmony patches can't be applied on Apple Silicon, so added fields can't be drawn in the inspector
-                    LoggerScoped.Log($"Fast Script Reload: on Apple Silicon, added fields are shown in '{NewFieldsWindow.MenuPath}' instead of the inspector.");
-                    return;
-                }
+                // Harmony patches can't be applied on Apple Silicon, so added fields can't be drawn in the inspector
+                LoggerScoped.Log($"Fast Script Reload: on Apple Silicon, added fields are shown in '{NewFieldsWindow.MenuPath}' instead of the inspector.");
+                return;
+            }
 
-                var harmony = new Harmony(nameof(NewFieldsRendererDefaultEditorPatch));
-            
-                var renderAdditionalFieldsOnOptimizedGuiPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(OnOptimizedInspectorGUI));
-                var noCustomEditorOriginalRenderingMethdod = AccessTools.Method("UnityEditor.GenericInspector, UnityEditor.CoreModule:OnOptimizedInspectorGUI");
-                harmony.Patch(noCustomEditorOriginalRenderingMethdod, postfix: new HarmonyMethod(renderAdditionalFieldsOnOptimizedGuiPostfix));
-            
-                var renderAdditionalFieldsDrawDefaultInspectorPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(DrawDefaultInspector));
-                var customEditorRenderingMethod = AccessTools.Method("UnityEditor.Editor, UnityEditor.CoreModule:DrawDefaultInspector");
-                harmony.Patch(customEditorRenderingMethod, postfix: new HarmonyMethod(renderAdditionalFieldsDrawDefaultInspectorPostfix));
+            var harmony = new Harmony(nameof(NewFieldsRendererDefaultEditorPatch));
+        
+            var renderAdditionalFieldsOnOptimizedGuiPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(OnOptimizedInspectorGUI));
+            var noCustomEditorOriginalRenderingMethdod = AccessTools.Method("UnityEditor.GenericInspector, UnityEditor.CoreModule:OnOptimizedInspectorGUI");
+            harmony.Patch(noCustomEditorOriginalRenderingMethdod, postfix: new HarmonyMethod(renderAdditionalFieldsOnOptimizedGuiPostfix));
+        
+            var renderAdditionalFieldsDrawDefaultInspectorPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(DrawDefaultInspector));
+            var customEditorRenderingMethod = AccessTools.Method("UnityEditor.Editor, UnityEditor.CoreModule:DrawDefaultInspector");
+            harmony.Patch(customEditorRenderingMethod, postfix: new HarmonyMethod(renderAdditionalFieldsDrawDefaultInspectorPostfix));
 
 #if ODIN_INSPECTOR
-                // Odin Inspector support
-                var renderAdditionalFieldsDrawOdinInspectorPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(DrawOdinInspector));
-                var customOdinEditorRenderingMethod = AccessTools.Method("Sirenix.OdinInspector.Editor.OdinEditor, Sirenix.OdinInspector.Editor:DrawOdinInspector");
-                harmony.Patch(customOdinEditorRenderingMethod, postfix: new HarmonyMethod(renderAdditionalFieldsDrawOdinInspectorPostfix));
+            // Odin Inspector support
+            var renderAdditionalFieldsDrawOdinInspectorPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(DrawOdinInspector));
+            var customOdinEditorRenderingMethod = AccessTools.Method("Sirenix.OdinInspector.Editor.OdinEditor, Sirenix.OdinInspector.Editor:DrawOdinInspector");
+            harmony.Patch(customOdinEditorRenderingMethod, postfix: new HarmonyMethod(renderAdditionalFieldsDrawOdinInspectorPostfix));
 #endif
-            }
         }
         
 #if ODIN_INSPECTOR
