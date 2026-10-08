@@ -56,6 +56,8 @@ namespace FastScriptReload.Runtime
                 var sw = new Stopwatch();
                 sw.Start();
 
+                GenericInstantiations.AddHotReloadAssembly(dynamicallyLoadedAssemblyWithUpdates);
+
                 foreach (var createdType in dynamicallyLoadedAssemblyWithUpdates.GetTypes()
                              .Where(t => (t.IsClass
                                          && !typeof(Delegate).IsAssignableFrom(t)) //don't redirect delegates
@@ -120,28 +122,14 @@ namespace FastScriptReload.Runtime
                             allDeclaredMethodsInExistingTypeByDescription.TryGetValue(createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix, out var matchingMethodInExistingType);
                             if (matchingMethodInExistingType != null)
                             {
-                                if (matchingMethodInExistingType.IsGenericMethod)
+                                if (matchingMethodInExistingType.IsGenericMethod
+                                    || (matchingMethodInExistingType.DeclaringType != null && matchingMethodInExistingType.DeclaringType.IsGenericType))
                                 {
-                                    LoggerScoped.LogWarning($"Method: '{matchingMethodInExistingType.FullDescription()}' is generic. Hot-Reload for generic methods is not supported yet, you won't see changes for that method.");
+                                    DetourGenericMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
                                     continue;
                                 }
 
-                                if (matchingMethodInExistingType.DeclaringType != null && matchingMethodInExistingType.DeclaringType.IsGenericType)
-                                {
-                                    LoggerScoped.LogWarning($"Type for method: '{matchingMethodInExistingType.FullDescription()}' is generic. Hot-Reload for generic types is not supported yet, you won't see changes for that type.");
-                                    continue;
-                                }
-
-                                LoggerScoped.LogDebug($"Trying to detour method, from: '{matchingMethodInExistingType.FullDescription()}' to: '{createdTypeMethodToUpdate.FullDescription()}'");
-                                DetourCrashHandler.LogDetour(matchingMethodInExistingType.ResolveFullName());
-                                if (AppleSiliconDetour.IsRequired)
-                                {
-                                    AppleSiliconDetour.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
-                                }
-                                else
-                                {
-                                    Memory.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
-                                }
+                                Detour(matchingMethodInExistingType, createdTypeMethodToUpdate);
                             }
                             else if (createdTypeMethodToUpdate.Name != ON_HOT_RELOAD_METHOD_NAME) //Added OnScriptHotReload is called without a detour, see FindAndExecuteOnScriptHotReload
                             {
@@ -176,6 +164,59 @@ namespace FastScriptReload.Runtime
             }
         }
         
+        private static void Detour(MethodBase from, MethodBase to)
+        {
+            LoggerScoped.LogDebug($"Trying to detour method, from: '{from.FullDescription()}' to: '{to.FullDescription()}'");
+            DetourCrashHandler.LogDetour(from.FullDescription());
+            if (AppleSiliconDetour.IsRequired)
+            {
+                AppleSiliconDetour.DetourMethod(from, to);
+            }
+            else
+            {
+                Memory.DetourMethod(from, to);
+            }
+        }
+
+        //Each instantiation has its own compiled code (shared between reference type arguments), each one in use is detoured
+        private static void DetourGenericMethod(MethodInfo existingOpenMethod, MethodInfo createdOpenMethod)
+        {
+            var instantiations = GenericInstantiations.GetUsedInstantiations(existingOpenMethod);
+            if (instantiations.Count == 0)
+            {
+                LoggerScoped.LogDebug($"No uses of generic method: '{existingOpenMethod.FullDescription()}' found in project code, nothing to update.");
+                return;
+            }
+
+            var usesTypeParametersAtRuntime = GenericInstantiations.UsesDeclaringTypeParametersAtRuntime(createdOpenMethod);
+            var skippedInstantiations = new List<string>();
+            foreach (var instantiation in instantiations)
+            {
+                //Shared code looks type parameters up through the original type, that's only correct if the new code doesn't need them
+                if (usesTypeParametersAtRuntime && instantiation.SharesCodeWithOtherTypeInstantiations)
+                {
+                    skippedInstantiations.Add(instantiation.ToString());
+                    continue;
+                }
+
+                try
+                {
+                    Detour(instantiation.Close(existingOpenMethod), instantiation.Close(createdOpenMethod));
+                }
+                catch (Exception e)
+                {
+                    LoggerScoped.LogWarning($"Unable to update generic method: '{existingOpenMethod.FullDescription()}' for {instantiation}: {e.Message}");
+                }
+            }
+
+            if (skippedInstantiations.Count > 0)
+            {
+                LoggerScoped.LogWarning($"Method: '{existingOpenMethod.FullDescription()}' uses its type's generic parameters at runtime (eg typeof(T), new T(), casts to T, static members). " +
+                                        $"Compiled code is shared between reference type arguments and can't be updated safely in that case, you won't see changes for: {string.Join(", ", skippedInstantiations)}. " +
+                                        $"Value type arguments are updated.");
+            }
+        }
+
         public Type GetRedirectedType(Type forExistingType)
         {
             return _existingTypeToRedirectedType[forExistingType];
