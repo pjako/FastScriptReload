@@ -82,15 +82,23 @@ namespace FastScriptReload.Runtime
                             continue;
                         }
 
-                        var allDeclaredMethodsInExistingType = matchingTypeInExistingAssemblies.GetMethods(ALL_DECLARED_METHODS_BINDING_FLAGS)
-                            .Where(m => !ExcludeMethodsDefinedOnTypes.Contains(m.DeclaringType))
-                            .ToList();
+                        //Looked up by description, building descriptions is slow and was done for every existing method, for every changed one
+                        var allDeclaredMethodsInExistingTypeByDescription = new Dictionary<string, MethodInfo>();
+                        foreach (var existingMethod in matchingTypeInExistingAssemblies.GetMethods(ALL_DECLARED_METHODS_BINDING_FLAGS)
+                                     .Where(m => !ExcludeMethodsDefinedOnTypes.Contains(m.DeclaringType)))
+                        {
+                            var existingMethodDescription = existingMethod.FullDescription();
+                            if (!allDeclaredMethodsInExistingTypeByDescription.ContainsKey(existingMethodDescription))
+                            {
+                                allDeclaredMethodsInExistingTypeByDescription.Add(existingMethodDescription, existingMethod);
+                            }
+                        }
+
                         foreach (var createdTypeMethodToUpdate in createdType.GetMethods(ALL_DECLARED_METHODS_BINDING_FLAGS)
                                      .Where(m => !ExcludeMethodsDefinedOnTypes.Contains(m.DeclaringType)))
                         {
                             var createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix = RemoveClassPostfix(createdTypeMethodToUpdate.FullDescription());
-                            var matchingMethodInExistingType = allDeclaredMethodsInExistingType
-                                .SingleOrDefault(m => m.FullDescription() == createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix);
+                            allDeclaredMethodsInExistingTypeByDescription.TryGetValue(createdTypeMethodToUpdateFullDescriptionWithoutPatchedClassPostfix, out var matchingMethodInExistingType);
                             if (matchingMethodInExistingType != null)
                             {
                                 if (matchingMethodInExistingType.IsGenericMethod)
