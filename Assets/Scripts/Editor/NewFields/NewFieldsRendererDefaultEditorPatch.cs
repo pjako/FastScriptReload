@@ -5,6 +5,7 @@ using FastScriptReload.Runtime;
 using FastScriptReload.Scripts.Runtime;
 using HarmonyLib;
 using ImmersiveVRTools.Editor.Common.Utilities;
+using ImmersiveVrToolsCommon.Runtime.Logging;
 using UnityEditor;
 using UnityEngine;
 
@@ -21,8 +22,8 @@ namespace FastScriptReload.Editor.NewFields
             {
                 if (AppleSiliconDetour.IsRequired)
                 {
-                    // Harmony patches can't be applied on Apple Silicon; hot reload itself uses AppleSiliconDetour instead.
-                    Debug.LogWarning("Fast Script Reload: added fields work, but they can't be shown in the inspector on Apple Silicon.");
+                    // Harmony patches can't be applied on Apple Silicon, so added fields can't be drawn in the inspector
+                    LoggerScoped.Log($"Fast Script Reload: on Apple Silicon, added fields are shown in '{NewFieldsWindow.MenuPath}' instead of the inspector.");
                     return;
                 }
 
@@ -62,12 +63,22 @@ namespace FastScriptReload.Editor.NewFields
             RenderNewlyAddedFields(__instance);
         }
 
+        public static bool HasNewlyAddedFields(UnityEngine.Object target)
+        {
+            return target && TemporaryNewFieldValues.TryGetDynamicallyAddedFieldValues(target, out _);
+        }
+
         private static void RenderNewlyAddedFields(UnityEditor.Editor __instance)
         {
+            RenderNewlyAddedFields(__instance.target);
+        }
+
+        public static void RenderNewlyAddedFields(UnityEngine.Object target)
+        {
             //TODO: perf optimize, this will be used for many types, perhaps keep which types changed and just pass type?
-            if (__instance.target)
+            if (target)
             {
-                if (TemporaryNewFieldValues.TryGetDynamicallyAddedFieldValues(__instance.target, out var addedFieldValues))
+                if (TemporaryNewFieldValues.TryGetDynamicallyAddedFieldValues(target, out var addedFieldValues))
                 {
                     EditorGUILayout.Space(10);
 
@@ -82,7 +93,7 @@ namespace FastScriptReload.Editor.NewFields
                         _cachedKeys.AddRange(addedFieldValues.Keys); //otherwise collection changed exception can happen
 
                         var newFieldNameToGetTypeFn = CreateNewFieldInitMethodRewriter.ResolveNewFieldsToTypeFn(
-                            AssemblyChangesLoader.Instance.GetRedirectedType(__instance.target.GetType())
+                            AssemblyChangesLoader.Instance.GetRedirectedType(target.GetType())
                         );
                         
                         if(newFieldNameToGetTypeFn.Count == 0)
@@ -123,7 +134,7 @@ namespace FastScriptReload.Editor.NewFields
                             }
                             else if (typeof(UnityEngine.Object).IsAssignableFrom(newFieldType))
                             {
-                                addedFieldValues[addedFieldValueKey] = EditorGUILayout.ObjectField(new GUIContent(addedFieldValueKey), (UnityEngine.Object)addedFieldValues[addedFieldValueKey], newFieldType, __instance.target);
+                                addedFieldValues[addedFieldValueKey] = EditorGUILayout.ObjectField(new GUIContent(addedFieldValueKey), (UnityEngine.Object)addedFieldValues[addedFieldValueKey], newFieldType, target);
                             }
 
                             else
