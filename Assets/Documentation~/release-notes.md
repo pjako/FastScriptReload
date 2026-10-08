@@ -1,3 +1,16 @@
+2.0
+- Apple Silicon Mac support, including OnScriptHotReload added in play mode and a 'Window -> Fast Script Reload -> Added Fields' window for added fields
+- Generic methods and methods of generic classes are hot reloaded (see limitations for exceptions)
+- Much faster reloads: compiled in-process with Roslyn and warmed up in the background, reloads start as soon as saved changes settle (new 'Reload after no further changes for N milliseconds' setting, replaces 'Batch script changes and reload every N seconds')
+- Works with Unity's compilation: saving a script outside play mode starts Unity's compilation right away, scripts changed while playing are compiled after play mode, Unity's domain reload is held back while playing. Auto Refresh no longer needs changing
+- Scripts to hot reload are found from Unity's compilation (Assets and embedded / local packages), manual file watcher setup removed
+- Settings moved to 'Project Settings -> Fast Script Reload' and simplified, added fields, partial classes and the 'this' call fix are always enabled
+- Changed code can use internal and private protected members of its assembly
+- Lambdas, closures and running coroutines are no longer redirected to code that doesn't match them
+- Fixed changes being missed or applied in the wrong order with several saves in quick succession
+- Fixed crashes and errors from file watcher threads, the polling file watcher stopping, temporary files piling up, added static fields failing to compile
+- Editors saving via temporary file and rename (eg Rider 'safe write') are picked up
+
 1.9
 - Added namespace support for partial classes (contributed by RunninglVlan)
 - Updated Harmonylib version to support Mac Silicon (contributed by jagheterfredrik)
