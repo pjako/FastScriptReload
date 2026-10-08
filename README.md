@@ -136,9 +136,9 @@ To fix please go to `FastScripReload\Examples\Point\Point.prefab` and search for
 ### Building Hot Reload for Unity - blog posts about technical approach (with code)
 I find FSR approach to hot reload very interesting (taking about being biased :)). I'm breaking down technical approach in a blog post series. You can find all about it here:
 
-[1) Building hot reload functionality](https://immersivevrtools.com/Blog/how-to-build-hot-reload-functionality-for-unity) | [Download Example Project Code](_github~/building-hot-reload-for-unity-blog-posts-example-code/01-simple-approach.zip)
+[1) Building hot reload functionality](https://immersivevrtools.com/Blog/how-to-build-hot-reload-functionality-for-unity)
 
-[2) Building hot reload for Unity builds / running directly on device](https://immersivevrtools.com/Blog/how-to-build-unity-hot-reload-on-device) | [Download Example Project Code](_github~/building-hot-reload-for-unity-blog-posts-example-code/02-hot-reload-on-device.zip)
+[2) Building hot reload for Unity builds / running directly on device](https://immersivevrtools.com/Blog/how-to-build-unity-hot-reload-on-device)
 
 ## Credits & Thanks
 - [Mono Mod](https://github.com/MonoMod/MonoMod) and [Harmony](https://github.com/pardeike/Harmony) - which provide runtime code detour that's at the core of hot reload approach.
