@@ -11,21 +11,35 @@ using System.Threading;
 [InitializeOnLoad]
 public class CustomFileWatcher : EditorWindow
 {
+    public class FileSnapshot
+    {
+        public DateTime LastWriteTimeUtc { get; }
+        public long Length { get; }
+        public string Hash { get; }
+
+        public FileSnapshot(DateTime lastWriteTimeUtc, long length, string hash)
+        {
+            LastWriteTimeUtc = lastWriteTimeUtc;
+            Length = length;
+            Hash = hash;
+        }
+    }
+
     public class HashEntry
     {
-        private Dictionary<string, string> _hashes = new Dictionary<string, string>();
+        private Dictionary<string, FileSnapshot> _snapshots = new Dictionary<string, FileSnapshot>();
         // Some metadata for the update function to use
         // WARN: Note this data isn't exactly synced up or anything. It just reads it in when the filewatcher is initialized.
         private string _searchPattern;
         private bool _includeSubdirectories;
-        
-        public Dictionary<string, string> Hashes => _hashes;
+
+        public Dictionary<string, FileSnapshot> Snapshots => _snapshots;
         public string SearchPattern => _searchPattern;
         public bool IncludeSubdirectories => _includeSubdirectories;
 
-        public HashEntry(Dictionary<string, string> hashes, string searchPattern, bool includeSubdirectories)
+        public HashEntry(Dictionary<string, FileSnapshot> snapshots, string searchPattern, bool includeSubdirectories)
         {
-            _hashes = hashes;
+            _snapshots = snapshots;
             _searchPattern = searchPattern;
             _includeSubdirectories = includeSubdirectories;
         }
@@ -35,7 +49,8 @@ public class CustomFileWatcher : EditorWindow
     private static object StateLock = new object();
 
     private static object ListLock; // Shared lock object
-    private static Thread LivewatcherThread;
+    // Kept in a field, an unreferenced Timer can be garbage collected, which silently stops it
+    private static Timer LivewatcherTimer;
 
     public static bool InitSignaled = false;
     private static readonly int WatcherThreadRunEveryNSeconds = 500; //TODO: expose in settings
@@ -44,44 +59,45 @@ public class CustomFileWatcher : EditorWindow
     {
         FileHashes = new Dictionary<string, HashEntry>();
         ListLock = new object();
-        LivewatcherThread = null;
+        LivewatcherTimer = null;
     }
     
     private static void UpdateFileWatcher()
     {
-        if (FileHashes.Count > 0)
+        // Watched directories are added from other threads, and a slow check can overlap with the next timer tick
+        lock (StateLock)
         {
-            foreach (var kvp in FileHashes)
+            if (FileHashes.Count > 0)
             {
-                CheckForChanges(kvp.Key, kvp.Value.SearchPattern, kvp.Value.IncludeSubdirectories);
+                foreach (var kvp in FileHashes)
+                {
+                    CheckForChanges(kvp.Key, kvp.Value.SearchPattern, kvp.Value.IncludeSubdirectories);
+                }
             }
-        }
-        else
-        {
-            Debug.LogError("File watcher has not been initialized yet. Please initialize first.");
+            else
+            {
+                Debug.LogError("File watcher has not been initialized yet. Please initialize first.");
+            }
         }
     }
     
     public static void TryEnableLivewatching()
     {
-        if (LivewatcherThread != null)
+        if (LivewatcherTimer != null)
         {
             Debug.LogWarning("Livewatcher is already running.");
             return;
         }
 
-        // Run on a separate thread every 1 second
-        LivewatcherThread = new Thread(() =>
+        // Timer callbacks run on the thread pool, every WatcherThreadRunEveryNSeconds milliseconds
+        LivewatcherTimer = new Timer((state) =>
         {
-            var timer = new Timer((state) =>
+            // Go at it if we've initialized
+            if (FileHashes.Count > 0)
             {
-                // Go at it if we've initialized
-                if (FileHashes.Count > 0)
-                    UpdateFileWatcher();
-            }, null, 0, WatcherThreadRunEveryNSeconds);
-        });
-
-        LivewatcherThread.Start();
+                UpdateFileWatcher();
+            }
+        }, null, 0, WatcherThreadRunEveryNSeconds);
     }
     
     public static void InitializeSingularFilewatcher(string directoryPath, string searchPattern, bool includeSubdirectories)
@@ -94,16 +110,18 @@ public class CustomFileWatcher : EditorWindow
         {
             lock (StateLock)
             {
-                var hashes = new Dictionary<string, string>();
+                var snapshots = new Dictionary<string, FileSnapshot>();
                 var files = Directory.GetFiles(directoryPath, searchPattern, includeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
 
                 foreach (var filePath in files)
                 {
-                    var hash = GetFileHash(filePath);
-                    hashes[filePath] = hash;
+                    if (TryCreateSnapshot(filePath, out var snapshot))
+                    {
+                        snapshots[filePath] = snapshot;
+                    }
                 }
 
-                FileHashes[directoryPath] = new HashEntry(hashes, searchPattern, includeSubdirectories);
+                FileHashes[directoryPath] = new HashEntry(snapshots, searchPattern, includeSubdirectories);
             }
         });
         thread.Start();
@@ -114,87 +132,82 @@ public class CustomFileWatcher : EditorWindow
         // Not really sure if this nuclear locking is needed
         lock (StateLock)
         {
-            var hashes = FileHashes[directoryPath].Hashes;
+            var snapshots = FileHashes[directoryPath].Snapshots;
 
-            // Time profiling: Start the stopwatch for Directory.GetFiles
 #if ImmersiveVrTools_DebugEnabled
-
-            System.Diagnostics.Stopwatch getFilesStopwatch = new System.Diagnostics.Stopwatch();
-            getFilesStopwatch.Start();
+            var checkStopwatch = System.Diagnostics.Stopwatch.StartNew();
 #endif
 
             string[] files = Directory.GetFiles(directoryPath, searchPattern, includeSubdirectories ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly);
 
-#if ImmersiveVrTools_DebugEnabled
-
-            // Time profiling: Stop the stopwatch for Directory.GetFiles and log the elapsed time
-            getFilesStopwatch.Stop();
-            Debug.Log("Directory.GetFiles elapsed time: " + getFilesStopwatch.ElapsedMilliseconds + " ms");
-#endif
-
-            // Check if files were created or modified
-            // Time profiling: Start the stopwatch for file creation/modification
-            var fileChangeStopwatch = new System.Diagnostics.Stopwatch();
-            fileChangeStopwatch.Start();
-
+            // Files missing from the new set were deleted and drop out of tracking
+            var currentSnapshots = new Dictionary<string, FileSnapshot>(files.Length);
             foreach (var file in files)
             {
-                if (!hashes.ContainsKey(file))
+                snapshots.TryGetValue(file, out var snapshot);
+                try
                 {
-                    // New file
+                    var fileInfo = new FileInfo(file);
+                    if (snapshot == null)
+                    {
+                        // New file, not hot reloaded but tracked from now on
 #if ImmersiveVrTools_DebugEnabled
-                    Debug.Log("New file: " + file);
+                        Debug.Log("New file: " + file);
 #endif
-                    continue;
+                        snapshot = new FileSnapshot(fileInfo.LastWriteTimeUtc, fileInfo.Length, GetFileHash(file));
+                    }
+                    else if (snapshot.LastWriteTimeUtc != fileInfo.LastWriteTimeUtc || snapshot.Length != fileInfo.Length)
+                    {
+                        // Only hashed when timestamp or size changed, the hash filters out saves that didn't change contents
+                        var updatedSnapshot = new FileSnapshot(fileInfo.LastWriteTimeUtc, fileInfo.Length, GetFileHash(file));
+                        if (updatedSnapshot.Hash != snapshot.Hash)
+                        {
+#if ImmersiveVrTools_DebugEnabled
+                            Debug.Log("File changed: " + file);
+#endif
+                            RecordChange(file);
+                        }
+                        snapshot = updatedSnapshot;
+                    }
+                }
+                catch (IOException)
+                {
+                    // File is being written or was just deleted, the previous snapshot is kept so the change is picked up on a later check
                 }
 
-                else if (hashes[file] != GetFileHash(file))
+                if (snapshot != null)
                 {
-                    // File changed
-#if ImmersiveVrTools_DebugEnabled
-                    Debug.Log("File changed: " + file);
-#endif
-                    RecordChange(file);
+                    currentSnapshots[file] = snapshot;
                 }
             }
 
-#if ImmersiveVrTools_DebugEnabled
-            // Time profiling: Stop the stopwatch for file creation/modification and log the elapsed time
-            fileChangeStopwatch.Stop();
-            Debug.Log("File creation/modification elapsed time: " + fileChangeStopwatch.ElapsedMilliseconds + " ms");
-#endif
-
-            // Check if any files were deleted
-            // Time profiling: Start the stopwatch for file deletion
-            var fileDeletionStopwatch = new System.Diagnostics.Stopwatch();
-            fileDeletionStopwatch.Start();
-
-            foreach (var kvp in hashes)
+            // Updated in place, FileHashes is being enumerated by the caller
+            snapshots.Clear();
+            foreach (var kvp in currentSnapshots)
             {
-                if (!File.Exists(kvp.Key))
-                {
-#if ImmersiveVrTools_DebugEnabled
-                    Debug.Log("File deleted: " + kvp.Key);
-#endif
-                }
+                snapshots[kvp.Key] = kvp.Value;
             }
 
-            // Time profiling: Stop the stopwatch for file deletion and log the elapsed time
 #if ImmersiveVrTools_DebugEnabled
-            fileDeletionStopwatch.Stop();
-            Debug.Log("File deletion elapsed time: " + fileDeletionStopwatch.ElapsedMilliseconds + " ms");
+            Debug.Log("File watcher check elapsed time: " + checkStopwatch.ElapsedMilliseconds + " ms");
 #endif
-
-            // Update hashes
-            hashes.Clear();
-            foreach (var file in files)
-            {
-                var hash = GetFileHash(file);
-                hashes[file] = hash;
-            }
         }
     }
 
+    private static bool TryCreateSnapshot(string filePath, out FileSnapshot snapshot)
+    {
+        try
+        {
+            var fileInfo = new FileInfo(filePath);
+            snapshot = new FileSnapshot(fileInfo.LastWriteTimeUtc, fileInfo.Length, GetFileHash(filePath));
+            return true;
+        }
+        catch (IOException)
+        {
+            snapshot = null;
+            return false;
+        }
+    }
 
     private static string GetFileHash(string filePath)
     {
