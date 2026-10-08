@@ -387,6 +387,9 @@ It'll open override file with template already in. You can read top comments tha
         public static readonly ToggleProjectEditorPreferenceDefinition EnableAutoReloadForChangedFiles = new ToggleProjectEditorPreferenceDefinition(
             "Hot reload changed scripts in play mode", "EnableAutoReloadForChangedFiles", true);
         
+        public static readonly ToggleProjectEditorPreferenceDefinition KeepPlayModeRunningInBackground = new ToggleProjectEditorPreferenceDefinition(
+            "Keep play mode running while Unity is in the background", "KeepPlayModeRunningInBackground", true);
+        
         public static readonly ToggleProjectEditorPreferenceDefinition EnableOnDemandReload = new ToggleProjectEditorPreferenceDefinition(
             "Allow reloading on demand (Window -> Fast Script Reload -> Force Reload)", "EnableOnDemandReload", false);
         

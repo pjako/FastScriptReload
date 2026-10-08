@@ -40,6 +40,7 @@ namespace FastScriptReload.Editor
                 EditorGUILayout.HelpBox("Changed scripts are hot reloaded while playing. Outside play mode Unity compiles them as usual, " +
                                         "saving a script starts the compilation right away.", MessageType.Info);
                 Render(FastScriptReloadPreference.EnableAutoReloadForChangedFiles);
+                Render(FastScriptReloadPreference.KeepPlayModeRunningInBackground);
 
                 EditorGUILayout.Space(10);
                 EditorGUILayout.LabelField("Excluded Scripts", EditorStyles.boldLabel);

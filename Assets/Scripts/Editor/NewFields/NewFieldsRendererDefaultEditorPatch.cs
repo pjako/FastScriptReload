@@ -21,7 +21,7 @@ namespace FastScriptReload.Editor.NewFields
             if (AppleSiliconDetour.IsRequired)
             {
                 // Harmony patches can't be applied on Apple Silicon, so added fields can't be drawn in the inspector
-                LoggerScoped.Log($"Fast Script Reload: on Apple Silicon, added fields are shown in '{NewFieldsWindow.MenuPath}' instead of the inspector.");
+                LoggerScoped.LogDebug($"Fast Script Reload: on Apple Silicon, added fields are shown in '{NewFieldsWindow.MenuPath}' instead of the inspector.");
                 return;
             }
 

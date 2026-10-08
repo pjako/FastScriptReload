@@ -387,9 +387,12 @@ You can also:
                 rspContents.AppendLine($"-define:{symbol}");
             }
 
+            var sourceUsesHarmony = InProcessRoslynCompilation.UsesHarmony(File.ReadAllText(sourceCodeCombinedFilePath));
             foreach (var referencePath in ResolveReferencePaths(originalAssemblyPathToAsmWithInternalsVisibleToCompiled))
             {
-                rspContents.AppendLine($"-r:\"{referencePath}\"");
+                rspContents.AppendLine(InProcessRoslynCompilation.IsReferenceAliased(referencePath, sourceUsesHarmony)
+                    ? $"-r:{InProcessRoslynCompilation.HarmonyReferenceAlias}=\"{referencePath}\""
+                    : $"-r:\"{referencePath}\"");
             }
 
             foreach (var analyzer in _analyzers)
