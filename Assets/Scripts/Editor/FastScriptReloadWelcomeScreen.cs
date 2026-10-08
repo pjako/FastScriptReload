@@ -321,13 +321,13 @@ Support pack contains:
                         GUILayout.Space(sectionBreakHeight);
 
                         GUILayout.Label(
-                            @"For performance reasons script changes are batched are reloaded every N seconds",
+                            @"Changed scripts are reloaded once no further changes come in for N milliseconds, so files saved together are compiled together",
                             screen.TextStyle
                         );
 
                         using (LayoutHelper.LabelWidth(300))
                         {
-                            ProductPreferenceBase.RenderGuiAndPersistInput(FastScriptReloadPreference.BatchScriptChangesAndReloadEveryNSeconds);
+                            ProductPreferenceBase.RenderGuiAndPersistInput(FastScriptReloadPreference.ReloadAfterChangesSettleForNMilliseconds);
                         }
 
                         GUILayout.Space(sectionBreakHeight);
@@ -697,8 +697,9 @@ CustomPolling - (experimental) watches files by manual polling for changes, slow
         /// <summary>Used to know when file watchers have changed from project window contextual menu (so when to update file watchers)</summary>
         public static bool FileWatcherSetupEntriesChanged = false;
 
-        public static readonly IntProjectEditorPreferenceDefinition BatchScriptChangesAndReloadEveryNSeconds = new IntProjectEditorPreferenceDefinition(
-            "Batch script changes and reload every N seconds", "BatchScriptChangesAndReloadEveryNSeconds", 1);
+        //New key on purpose, values stored for the previous 'BatchScriptChangesAndReloadEveryNSeconds' setting were in seconds
+        public static readonly IntProjectEditorPreferenceDefinition ReloadAfterChangesSettleForNMilliseconds = new IntProjectEditorPreferenceDefinition(
+            "Reload after no further changes for N milliseconds", "ReloadAfterChangesSettleForNMilliseconds", 100);
 
         public static readonly ToggleProjectEditorPreferenceDefinition EnableAutoReloadForChangedFiles = new ToggleProjectEditorPreferenceDefinition(
             "Enable auto Hot-Reload for changed files (in play mode)", "EnableAutoReloadForChangedFiles", true);
@@ -867,7 +868,7 @@ CustomPolling - (experimental) watches files by manual polling for changes, slow
         public static List<ProjectEditorPreferenceDefinitionBase> PreferenceDefinitions = new List<ProjectEditorPreferenceDefinitionBase>()
         {
             CreateDefaultShowOptionPreferenceDefinition(),
-            BatchScriptChangesAndReloadEveryNSeconds,
+            ReloadAfterChangesSettleForNMilliseconds,
             EnableAutoReloadForChangedFiles,
             EnableExperimentalThisCallLimitationFix,
             LogHowToFixMessageOnCompilationError,
