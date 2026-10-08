@@ -56,9 +56,15 @@ namespace FastScriptReload.Editor.Compilation
         public static readonly string[] ActiveScriptCompilationDefines;
         protected static readonly string DynamicallyCreatedAssemblyAttributeSourceCode = $"[assembly: {typeof(DynamicallyCreatedAssemblyAttribute).FullName}()]";
         private static readonly string AssemblyCsharpFullPath;
-        
+
+        //Read from compilation threads, invalidated from whichever thread loads an assembly
+        private static readonly object ReferenceableAssembliesLock = new object();
+        private static List<ReferenceableAssembly> _referenceableAssemblies;
+
         static DynamicCompilationBase()
         {
+            AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
+
             //needs to be set from main thread
             ActiveScriptCompilationDefines = EditorUserBuildSettings.activeScriptCompilationDefines;
             AssemblyCsharpFullPath = SessionStateCache.GetOrCreateString(
@@ -319,29 +325,11 @@ namespace FastScriptReload.Editor.Compilation
 
         protected static List<string> ResolveReferencesToAdd(List<string> excludeAssyNames)
         {
-            var referencesToAdd = new List<string>();
-            foreach (var assembly in AppDomain.CurrentDomain
-                         .GetAssemblies() //TODO: PERF: just need to load once and cache? or get assembly based on changed file only?
-                         .Where(a => excludeAssyNames.All(assyName => !a.FullName.StartsWith(assyName))
-												&& CustomAttributeExtensions.GetCustomAttribute<DynamicallyCreatedAssemblyAttribute>((Assembly)a) == null))
-            {
-                try
-                {
-                    if (string.IsNullOrEmpty(assembly.Location))
-                    {
-                        LoggerScoped.LogDebug($"FastScriptReload: Assembly location is null, usually dynamic assembly, harmless.");
-                        continue;
-                    }
-
-                    referencesToAdd.Add(assembly.Location);
-                }
-                catch (Exception)
-                {
-                    LoggerScoped.LogDebug($"Unable to add a reference to assembly as unable to get location or null: {assembly.FullName} when hot-reloading, this is likely dynamic assembly and won't cause issues");
-                }
-            }
-            
-            referencesToAdd = referencesToAdd.Where(r => !ReferencesExcludedFromHotReload.Any(rTe => r.EndsWith(rTe))).ToList();
+            var referencesToAdd = GetReferenceableAssemblies()
+                .Where(a => excludeAssyNames.All(assyName => !a.FullName.StartsWith(assyName)))
+                .Select(a => a.Location)
+                .Where(r => !ReferencesExcludedFromHotReload.Any(rTe => r.EndsWith(rTe)))
+                .ToList();
 
             if (EnableExperimentalThisCallLimitationFix || FastScriptReloadManager.Instance.AssemblyChangesLoaderEditorOptionsNeededInBuild.EnableExperimentalAddedFieldsSupport)
             {
@@ -349,6 +337,66 @@ namespace FastScriptReload.Editor.Compilation
             }
 
             return referencesToAdd;
+        }
+
+        //Enumerating and checking every loaded assembly on each reload adds up, the list only changes when an assembly is loaded
+        private static List<ReferenceableAssembly> GetReferenceableAssemblies()
+        {
+            lock (ReferenceableAssembliesLock)
+            {
+                if (_referenceableAssemblies != null)
+                {
+                    return _referenceableAssemblies;
+                }
+
+                _referenceableAssemblies = new List<ReferenceableAssembly>();
+                foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()
+                             .Where(a => CustomAttributeExtensions.GetCustomAttribute<DynamicallyCreatedAssemblyAttribute>((Assembly)a) == null))
+                {
+                    try
+                    {
+                        if (string.IsNullOrEmpty(assembly.Location))
+                        {
+                            LoggerScoped.LogDebug($"FastScriptReload: Assembly location is null, usually dynamic assembly, harmless.");
+                            continue;
+                        }
+
+                        _referenceableAssemblies.Add(new ReferenceableAssembly(assembly.FullName, assembly.Location));
+                    }
+                    catch (Exception)
+                    {
+                        LoggerScoped.LogDebug($"Unable to add a reference to assembly as unable to get location or null: {assembly.FullName} when hot-reloading, this is likely dynamic assembly and won't cause issues");
+                    }
+                }
+
+                return _referenceableAssemblies;
+            }
+        }
+
+        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        {
+            //Assemblies compiled for hot reload are never referenced, loading one doesn't change the list
+            if (args.LoadedAssembly.IsDefined(typeof(DynamicallyCreatedAssemblyAttribute), false))
+            {
+                return;
+            }
+
+            lock (ReferenceableAssembliesLock)
+            {
+                _referenceableAssemblies = null;
+            }
+        }
+
+        private class ReferenceableAssembly
+        {
+            public string FullName { get; }
+            public string Location { get; }
+
+            public ReferenceableAssembly(string fullName, string location)
+            {
+                FullName = fullName;
+                Location = location;
+            }
         }
 
         private static void IncludeMicrosoftCsharpReferenceToSupportDynamicKeyword(List<string> referencesToAdd)
