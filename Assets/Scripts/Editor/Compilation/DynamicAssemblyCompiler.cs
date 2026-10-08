@@ -27,7 +27,7 @@ namespace FastScriptReload.Editor.Compilation
 #if UNITY_2021_1_OR_NEWER
                              $"<a href=\"{compileResult.SourceCodeCombinedFileLocation}\" line=\"1\">(click here to debug [in bottom details pane])</a>" +
 #else
-                            "(to debug go to Fast Script Reload -> Start Screen -> Debugging -> Auto-open generated source file for debugging)" +
+                            "(to debug enable Project Settings -> Fast Script Reload -> Advanced -> Auto-open generated source file for debugging)" +
 #endif
                              $" - compilation (took {sw.ElapsedMilliseconds}ms)"
 #if ImmersiveVrTools_DebugEnabled

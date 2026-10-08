@@ -38,7 +38,6 @@ namespace FastScriptReload.Editor
         private static string DataPath = Application.dataPath;
         
 
-        public const string FileWatcherReplacementTokenForApplicationDataPath = "<Application.dataPath>";
         private const int BaseMenuItemPriority_ManualScriptOverride = 100;
         private const int BaseMenuItemPriority_Exclusions = 200;
         
@@ -51,9 +50,8 @@ namespace FastScriptReload.Editor
         private PlayModeStateChange _lastPlayModeStateChange;
         private List<IDisposable> _fileWatchers = new List<IDisposable>();
         private IEnumerable<string> _currentFileExclusions;
-        private int _triggerDomainReloadIfOverNDynamicallyLoadedAssembles = 100;
-        public bool EnableExperimentalThisCallLimitationFix { get; private set; }
-        public bool IsPartialClassSupportEnabled { get; private set; }
+        //Outside play mode, a full domain reload clears out the assemblies loaded by hot reload
+        private const int TriggerDomainReloadAfterNHotReloadsOutsidePlayMode = 50;
 #pragma warning disable 0618
         public AssemblyChangesLoaderEditorOptionsNeededInBuild AssemblyChangesLoaderEditorOptionsNeededInBuild { get; private set; } = new AssemblyChangesLoaderEditorOptionsNeededInBuild();
 
@@ -121,7 +119,7 @@ namespace FastScriptReload.Editor
             {
                 LoggerScoped.LogWarning($"FastScriptReload: File: '{filePath}' changed, but marked as exclusion. Hot-Reload will not be performed. You can manage exclusions via" +
                                         $"\r\nRight click context menu (Fast Script Reload > Add / Remove Hot-Reload exclusion)" +
-                                        $"\r\nor via Window -> Fast Script Reload -> Start Screen -> Exclusion menu");
+                                        $"\r\nor via Project Settings -> Fast Script Reload");
             
                 return;
             }
@@ -364,8 +362,7 @@ namespace FastScriptReload.Editor
         [MenuItem("Assets/Fast Script Reload/Show Exclusions", false, BaseMenuItemPriority_Exclusions + 3)]
         public static void ShowExcludedFilesInUi()
         {
-            var window = FastScriptReloadWelcomeScreen.Init();
-            window.OpenExclusionsSection();
+            FastScriptReloadSettingsProvider.Open();
         }
         
         private static string ResolveRelativeToAssetDirectoryFilePath(UnityEngine.Object obj)
@@ -438,22 +435,17 @@ namespace FastScriptReload.Editor
         {
             //TODO: PERF: needed in file watcher but when run on non-main thread causes exception. 
             _currentFileExclusions = FastScriptReloadPreference.FilesExcludedFromHotReload.GetElements();
-            _triggerDomainReloadIfOverNDynamicallyLoadedAssembles = (int)FastScriptReloadPreference.TriggerDomainReloadIfOverNDynamicallyLoadedAssembles.GetEditorPersistedValueOrDefault();
             _isOnDemandHotReloadEnabled = (bool)FastScriptReloadPreference.EnableOnDemandReload.GetEditorPersistedValueOrDefault();
-            EnableExperimentalThisCallLimitationFix = (bool)FastScriptReloadPreference.EnableExperimentalThisCallLimitationFix.GetEditorPersistedValueOrDefault();
-            AssemblyChangesLoaderEditorOptionsNeededInBuild.UpdateValues(
-                (bool)FastScriptReloadPreference.IsDidFieldsOrPropertyCountChangedCheckDisabled.GetEditorPersistedValueOrDefault(),
-                (bool)FastScriptReloadPreference.EnableExperimentalAddedFieldsSupport.GetEditorPersistedValueOrDefault()
-            );
-            IsPartialClassSupportEnabled = (bool)FastScriptReloadPreference.IsPartialClassSupportEnabled.GetEditorPersistedValueOrDefault();
+            //Added fields are always supported, the fields check only applies without that support
+            AssemblyChangesLoaderEditorOptionsNeededInBuild.UpdateValues(false, true);
         }
 
         public void TriggerReloadForChangedFiles()
         {
-            if (!Application.isPlaying && _hotReloadPerformedCount > _triggerDomainReloadIfOverNDynamicallyLoadedAssembles)
+            if (!Application.isPlaying && _hotReloadPerformedCount > TriggerDomainReloadAfterNHotReloadsOutsidePlayMode)
             {
                 _hotReloadPerformedCount = 0;
-                LoggerScoped.LogWarning($"Dynamically created assembles reached over: {_triggerDomainReloadIfOverNDynamicallyLoadedAssembles} - triggering full domain reload to clean up. You can adjust that value in settings.");
+                LoggerScoped.LogWarning($"Dynamically created assembles reached over: {TriggerDomainReloadAfterNHotReloadsOutsidePlayMode} - triggering full domain reload to clean up.");
 #if UNITY_2019_3_OR_NEWER
                 CompilationPipeline.RequestScriptCompilation(); //TODO: add some timer to ensure this does not go into some kind of loop
 #elif UNITY_2017_1_OR_NEWER
@@ -710,7 +702,6 @@ Workaround will search in all folders (under project root) and will use first fo
 
             var changedFileName = new FileInfo(filePathToUse).Name;
             //TODO: try to look in all file watcher configured paths, some users might have code outside of assets, eg packages
-            // var fileFoundInAssets = FastScriptReloadPreference.FileWatcherSetupEntries.GetElementsTyped().SelectMany(setupEntries => Directory.GetFiles(DataPath, setupEntries.path, SearchOption.AllDirectories)).ToList();
 
             var fileFoundInAssets = Directory.GetFiles(DataPath, changedFileName, SearchOption.AllDirectories);
             if (fileFoundInAssets.Length == 0)
