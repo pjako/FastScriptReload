@@ -41,12 +41,6 @@ namespace FastScriptReload.Editor
         public const string FileWatcherReplacementTokenForApplicationDataPath = "<Application.dataPath>";
         private const int BaseMenuItemPriority_ManualScriptOverride = 100;
         private const int BaseMenuItemPriority_Exclusions = 200;
-        private const int BaseMenuItemPriority_FileWatcher = 300;
-        
-        public Dictionary<string, Func<string>> FileWatcherTokensToResolvePathFn = new Dictionary<string, Func<string>>
-        {
-            [FileWatcherReplacementTokenForApplicationDataPath] = () => DataPath
-        };
         
         private Dictionary<string, DynamicFileHotReloadState> _lastProcessedDynamicFileHotReloadStatesInSession = new Dictionary<string, DynamicFileHotReloadState>();
         public IReadOnlyDictionary<string, DynamicFileHotReloadState> LastProcessedDynamicFileHotReloadStatesInSession => _lastProcessedDynamicFileHotReloadStatesInSession;
@@ -74,6 +68,8 @@ namespace FastScriptReload.Editor
         private readonly ConcurrentQueue<Action> _mainThreadActions = new ConcurrentQueue<Action>();
         //Only one reload at a time, otherwise an older compilation finishing last could overwrite newer changes. Main thread only
         private bool _isHotReloadInProgress;
+        //Read from file watcher threads, replaced when watchers are set up
+        private volatile ProjectScripts _projectScripts;
         //Set from file watcher threads
         private volatile bool _isUnityRefreshRequested;
         private volatile bool _hadFileChangesInPlayMode;
@@ -113,7 +109,14 @@ namespace FastScriptReload.Editor
                 LoggerScoped.LogWarning($"Specified file: '{filePath}' does not exist. Hot-Reload will not be performed.");
                 return;
             }
-            
+
+            var projectScripts = _projectScripts;
+            if (projectScripts != null && !projectScripts.IsHotReloadable(filePath))
+            {
+                LoggerScoped.LogDebug($"File: '{filePath}' changed, but isn't compiled into a project assembly that can be hot reloaded, ignoring.");
+                return;
+            }
+
             if (_currentFileExclusions != null && _currentFileExclusions.Any(fp => filePath.Replace("\\", "/").EndsWith(fp)))
             {
                 LoggerScoped.LogWarning($"FastScriptReload: File: '{filePath}' changed, but marked as exclusion. Hot-Reload will not be performed. You can manage exclusions via" +
@@ -156,15 +159,10 @@ namespace FastScriptReload.Editor
 
         private void StartWatchingDirectoryAndSubdirectories(string directoryPath, string filter, bool includeSubdirectories) 
         {
-            foreach (var kv in FileWatcherTokensToResolvePathFn)
-            {
-                directoryPath = directoryPath.Replace(kv.Key, kv.Value());
-            }
-            
             var directoryInfo = new DirectoryInfo(directoryPath);
             if (!directoryInfo.Exists)
             {
-                LoggerScoped.LogWarning($"FastScriptReload: Directory: '{directoryPath}' does not exist, make sure file-watcher setup is correct. You can access via: Window -> Fast Script Reload -> File Watcher (Advanced Setup)");
+                LoggerScoped.LogWarning($"FastScriptReload: Directory: '{directoryPath}' does not exist, changes to scripts in it won't be hot reloaded.");
             }
 
             switch ((FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault())
@@ -274,13 +272,6 @@ namespace FastScriptReload.Editor
             //do not add init code in here as with domain reload turned off it won't be properly set on play-mode enter, use Init method instead
             EditorApplication.update += Instance.Update;
             EditorApplication.playModeStateChanged += Instance.OnEditorApplicationOnplayModeStateChanged;
-
-            ///if <see cref="FastScriptReloadPreference.WatchOnlySpecified"/> is enabled, disable auto reload automatically when launching editor. Will be enabled automatically when adding file watcher manually
-            if ((bool)FastScriptReloadPreference.WatchOnlySpecified.GetEditorPersistedValueOrDefault() && SessionState.GetBool("NEED_EDITOR_SESSION_INIT", true))
-            {
-                SessionState.SetBool("NEED_EDITOR_SESSION_INIT", false);
-                ClearFileWatchersEntries();
-            }
         }
 
         ~FastScriptReloadManager()
@@ -296,118 +287,6 @@ namespace FastScriptReload.Editor
                 ClearFileWatchers();
             }
         }
-
-        private const string WatchSpecificFileOrFolderMenuItemName = "Assets/Fast Script Reload/Watch File\\Folder";
-        [MenuItem(WatchSpecificFileOrFolderMenuItemName, true, BaseMenuItemPriority_FileWatcher + 1)]
-        public static bool ToggleSelectionFileWatchersSetupValidation()
-        {
-            if (!(bool)FastScriptReloadPreference.WatchOnlySpecified.GetEditorPersistedValueOrDefault())
-            {
-                return false;
-            }
-            
-            Menu.SetChecked(WatchSpecificFileOrFolderMenuItemName, false);
-
-            var isSelectionContaininingFolderOrScript = false;
-            for (var i = 0; i < Selection.objects.Length; i++)
-            {
-                if (Selection.objects[i] is MonoScript selectedMonoScript)
-                {
-                    isSelectionContaininingFolderOrScript = true;
-
-                    if (IsFileWatcherSetupEntryAlreadyPresent(selectedMonoScript))
-                    {
-                        Menu.SetChecked(WatchSpecificFileOrFolderMenuItemName, true);
-                        break;
-                    }
-                }
-                else if (Selection.objects[i] is DefaultAsset selectedAsset)
-                {
-                    isSelectionContaininingFolderOrScript = true;
-
-                    if (IsFileWatcherSetupEntryAlreadyPresent(selectedAsset))
-                    {
-                        Menu.SetChecked(WatchSpecificFileOrFolderMenuItemName, true);
-                        break;
-                    }
-                }
-            }
-
-            return isSelectionContaininingFolderOrScript;
-        }
-
-        /// <summary>Used to add/remove scripts/folders to the <see cref="FastScriptReloadPreference.FileWatcherSetupEntries"/></summary>
-        [MenuItem(WatchSpecificFileOrFolderMenuItemName, false, BaseMenuItemPriority_FileWatcher + 1)]
-        public static void ToggleSelectionFileWatchersSetup()
-        {
-            var isFileWatchersChange = false;
-            for (var i = 0; i < Selection.objects.Length; i++)
-            {
-                if (Selection.objects[i] is MonoScript selectedMonoScript)
-                {
-                    if (IsFileWatcherSetupEntryAlreadyPresent(selectedMonoScript, out var foundFileWatcherSetupEntry))
-                    {
-                        FastScriptReloadPreference.FileWatcherSetupEntries.RemoveElement(JsonUtility.ToJson(foundFileWatcherSetupEntry));
-                    }
-                    else
-                    {
-                        FastScriptReloadPreference.FileWatcherSetupEntries.AddElement(JsonUtility.ToJson(foundFileWatcherSetupEntry));
-                    }
-                    
-                    isFileWatchersChange = true;
-                }
-                else if (Selection.objects[i] is DefaultAsset selectedAsset)
-                {
-                    if (IsFileWatcherSetupEntryAlreadyPresent(selectedAsset, out var foundFileWatcherSetupEntry))
-                    {
-                        FastScriptReloadPreference.FileWatcherSetupEntries.RemoveElement(JsonUtility.ToJson(foundFileWatcherSetupEntry));
-                    }
-                    else
-                    {
-                        FastScriptReloadPreference.FileWatcherSetupEntries.AddElement(JsonUtility.ToJson(foundFileWatcherSetupEntry));
-                    }
-                    
-                    isFileWatchersChange = true;
-                }
-            }
-
-            if (isFileWatchersChange)
-            {
-                FastScriptReloadPreference.FileWatcherSetupEntriesChanged = true; // Ensures file watcher are updated in play mode
-
-                /// When in <see cref="FastScriptReloadPreference.WatchOnlySpecified"/> mode, <see cref="FastScriptReloadPreference.EnableAutoReloadForChangedFiles"/> state is managed automatically (disabled when no file watcher)
-                if ((bool)FastScriptReloadPreference.WatchOnlySpecified.GetEditorPersistedValueOrDefault())
-                {
-                    var isAnyFileWatcherSet = FastScriptReloadPreference.FileWatcherSetupEntries.GetElements().Any();
-                    FastScriptReloadPreference.EnableAutoReloadForChangedFiles.SetEditorPersistedValue(isAnyFileWatcherSet);
-                }
-            }
-        }
-
-        [MenuItem("Assets/Fast Script Reload/Clear Watched Files", true, BaseMenuItemPriority_FileWatcher + 2)]
-        public static bool ClearFastScriptReloadValidation()
-        {
-            if (!(bool)FastScriptReloadPreference.WatchOnlySpecified.GetEditorPersistedValueOrDefault())
-            {
-                return false;
-            }
-
-            return FastScriptReloadPreference.FileWatcherSetupEntries.GetElements().Any();
-        }
-        [MenuItem("Assets/Fast Script Reload/Clear Watched Files", false, BaseMenuItemPriority_FileWatcher + 2)]
-        public static void ClearFileWatchersEntries()
-        {
-            foreach (var item in FastScriptReloadPreference.FileWatcherSetupEntries.GetElements())
-            {
-                FastScriptReloadPreference.FileWatcherSetupEntries.RemoveElement(item);
-            }
-            Debug.LogWarning("File Watcher Setup has been cleared - make sure to add some.");
-
-            FastScriptReloadPreference.EnableAutoReloadForChangedFiles.SetEditorPersistedValue(false);
-
-            ClearFileWatchers();
-        }
-
 
         [MenuItem("Assets/Fast Script Reload/Add \\ Open User Script Rewrite Override", false, BaseMenuItemPriority_ManualScriptOverride + 1)]
         public static void AddHotReloadManualScriptOverride()
@@ -856,95 +735,70 @@ Workaround will search in all folders (under project root) and will use first fo
         private static bool HotReloadDisabled_WarningMessageShownAlready;
         private static void EnsureInitialized()
         {
-            if (!(bool)FastScriptReloadPreference.EnableAutoReloadForChangedFiles.GetEditorPersistedValueOrDefault()
-                && !(bool)FastScriptReloadPreference.EnableOnDemandReload.GetEditorPersistedValueOrDefault()
-                && !(bool)FastScriptReloadPreference.WatchOnlySpecified.GetEditorPersistedValueOrDefault())
+            if (!IsHotReloadEnabled())
             {
                 if (!HotReloadDisabled_WarningMessageShownAlready)
                 {
-                    LoggerScoped.LogWarning($"Neither auto hot reload / on-demand reload / or watch specific is specified, file watchers will not be initialized. Please adjust settings and restart if you want hot reload to work.");
+                    LoggerScoped.LogWarning($"Neither auto hot reload nor on-demand reload is enabled, file watchers will not be initialized. Please adjust settings and restart if you want hot reload to work.");
                     HotReloadDisabled_WarningMessageShownAlready = true;
                 }
                 return;
             }
 
-            var isUsingCustomFileWatchers =(FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault() 
+            var isUsingCustomFileWatchers = (FileWatcherImplementation)FastScriptReloadPreference.FileWatcherImplementationInUse.GetEditorPersistedValueOrDefault() 
                                             == FileWatcherImplementation.CustomPolling;
             if (!isUsingCustomFileWatchers)
             {
-                if (Instance._fileWatchers.Count == 0 || FastScriptReloadPreference.FileWatcherSetupEntriesChanged)
+                if (Instance._fileWatchers.Count == 0)
                 {
-                    FastScriptReloadPreference.FileWatcherSetupEntriesChanged = false;
-
-                    InitializeFromFileWatcherSetupEntries();
+                    WatchProjectScripts();
                 }
             }
             else if(!CustomFileWatcher.InitSignaled)
             {
                 CustomFileWatcher.TryEnableLivewatching();
-                InitializeFromFileWatcherSetupEntries();
+                WatchProjectScripts();
                 CustomFileWatcher.InitSignaled = true;
             }
         }
 
-        private static void InitializeFromFileWatcherSetupEntries()
+        //Watches the folders with the project's scripts, changes are then checked against the scripts Unity compiles
+        private static void WatchProjectScripts()
         {
-            var fileWatcherSetupEntries = FastScriptReloadPreference.FileWatcherSetupEntries.GetElementsTyped();
-            if (fileWatcherSetupEntries.Count == 0)
+            Instance._projectScripts = ProjectScripts.Discover();
+            foreach (var rootDirectory in Instance._projectScripts.RootDirectories)
             {
-                LoggerScoped.LogWarning($"There are no file watcher setup entries. Tool will not be able to pick changes automatically");
+                Instance.StartWatchingDirectoryAndSubdirectories(rootDirectory, "*.cs", true);
             }
 
-            foreach (var fileWatcherSetupEntry in fileWatcherSetupEntries)
+            RefreshUnityIfScriptsChangedDuringCompilation();
+        }
+
+        private const string LastCompilationStartedSessionKey = "FSR:LastCompilationStartedUtcTicks";
+        //Unity may have only refreshed shortly before compilation started
+        private static readonly TimeSpan CompilationStartMargin = TimeSpan.FromSeconds(2);
+
+        [InitializeOnLoadMethod]
+        private static void TrackCompilationStart()
+        {
+            CompilationPipeline.compilationStarted += _ => SessionState.SetString(LastCompilationStartedSessionKey, DateTime.UtcNow.Ticks.ToString());
+        }
+
+        //Scripts saved while Unity compiled and reloaded aren't seen by file watchers, there are none during the domain reload
+        private static void RefreshUnityIfScriptsChangedDuringCompilation()
+        {
+            var lastCompilationStarted = SessionState.GetString(LastCompilationStartedSessionKey, string.Empty);
+            SessionState.EraseString(LastCompilationStartedSessionKey);
+            if (EditorApplication.isPlayingOrWillChangePlaymode || !long.TryParse(lastCompilationStarted, out var ticks))
             {
-                Instance.StartWatchingDirectoryAndSubdirectories(
-                    fileWatcherSetupEntry.path,
-                    fileWatcherSetupEntry.filter,
-                    fileWatcherSetupEntry.includeSubdirectories
-                );
+                return;
             }
-        }
 
-        private static bool IsFileWatcherSetupEntryAlreadyPresent(FileWatcherSetupEntry fileWatcherSetupEntry)
-        {
-            //TODO: could be a bit of a per hit, GetElementsTypes will parse json every time
-            return FastScriptReloadPreference.FileWatcherSetupEntries.GetElementsTyped()
-                .Any(e => e.path == fileWatcherSetupEntry.path 
-                          && e.filter == fileWatcherSetupEntry.filter 
-                          && e.includeSubdirectories == fileWatcherSetupEntry.includeSubdirectories);
-        }
-
-        private static bool IsFileWatcherSetupEntryAlreadyPresent(DefaultAsset selectedAsset)
-        {
-            FileWatcherSetupEntry fileWatcherSetupEntry;
-            return IsFileWatcherSetupEntryAlreadyPresent(selectedAsset, out fileWatcherSetupEntry);
-        }
-        
-        private static bool IsFileWatcherSetupEntryAlreadyPresent(DefaultAsset selectedAsset, out FileWatcherSetupEntry fileWatcherSetupEntry)
-        {
-            var path = FileWatcherReplacementTokenForApplicationDataPath + AssetDatabase.GetAssetPath(selectedAsset).Remove(0, "Assets".Length);
-            fileWatcherSetupEntry = new FileWatcherSetupEntry(path, "*.cs", true);
-
-            var isFileWatcherSetupEntryAlreadyPresent = IsFileWatcherSetupEntryAlreadyPresent(fileWatcherSetupEntry);
-            return isFileWatcherSetupEntryAlreadyPresent;
-        }
-
-        private static bool IsFileWatcherSetupEntryAlreadyPresent(MonoScript selectedMonoScript)
-        {
-            FileWatcherSetupEntry fileWatcherSetupEntry;
-            return IsFileWatcherSetupEntryAlreadyPresent(selectedMonoScript, out fileWatcherSetupEntry);
-        }
-
-        private static bool IsFileWatcherSetupEntryAlreadyPresent(MonoScript selectedMonoScript, out FileWatcherSetupEntry fileWatcherSetupEntry)
-        {
-            var path = FileWatcherReplacementTokenForApplicationDataPath + AssetDatabase.GetAssetPath(selectedMonoScript).Remove(0, "Assets".Length);
-            var fileSeperatorIndex = path.LastIndexOf('/');
-            var fileName = path.Substring(fileSeperatorIndex + 1);
-            path = path.Substring(0, fileSeperatorIndex);
-
-            fileWatcherSetupEntry = new FileWatcherSetupEntry(path, fileName, false);
-            var isFileWatcherSetupEntryAlreadyPresent = IsFileWatcherSetupEntryAlreadyPresent(fileWatcherSetupEntry);
-            return isFileWatcherSetupEntryAlreadyPresent;
+            if (Instance._projectScripts.IsAnyScriptChangedSince(new DateTime(ticks, DateTimeKind.Utc) - CompilationStartMargin))
+            {
+                LoggerScoped.LogDebug("Scripts changed while Unity was compiling, refreshing again.");
+                Instance.RequestUnityRefresh();
+            }
         }
     }
 
