@@ -107,7 +107,14 @@ namespace FastScriptReload.Runtime
 
                                 LoggerScoped.LogDebug($"Trying to detour method, from: '{matchingMethodInExistingType.FullDescription()}' to: '{createdTypeMethodToUpdate.FullDescription()}'");
                                 DetourCrashHandler.LogDetour(matchingMethodInExistingType.ResolveFullName());
-                                Memory.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
+                                if (AppleSiliconDetour.IsRequired)
+                                {
+                                    AppleSiliconDetour.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
+                                }
+                                else
+                                {
+                                    Memory.DetourMethod(matchingMethodInExistingType, createdTypeMethodToUpdate);
+                                }
                             }
                             else 
                             {

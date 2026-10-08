@@ -15,6 +15,13 @@ public class PatchMcsArgsGeneration
 
     static PatchMcsArgsGeneration()
     {
+        if (AppleSiliconDetour.IsRequired)
+        {
+            // Harmony patches can't be applied on Apple Silicon.
+            UnityEngine.Debug.LogWarning("Fast Script Reload: MCS compilation can't pass preprocessor directives on Apple Silicon.");
+            return;
+        }
+
         var harmony = new Harmony(nameof(PatchMcsArgsGeneration));
 
         var original = AccessTools.Method("Microsoft.CSharp.CSharpCodeGenerator:BuildArgs");

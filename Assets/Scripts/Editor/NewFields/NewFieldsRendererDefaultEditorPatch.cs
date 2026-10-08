@@ -19,6 +19,13 @@ namespace FastScriptReload.Editor.NewFields
         {
             if ((bool)FastScriptReloadPreference.EnableExperimentalAddedFieldsSupport.GetEditorPersistedValueOrDefault())
             {
+                if (AppleSiliconDetour.IsRequired)
+                {
+                    // Harmony patches can't be applied on Apple Silicon; hot reload itself uses AppleSiliconDetour instead.
+                    Debug.LogWarning("Fast Script Reload: added fields work, but they can't be shown in the inspector on Apple Silicon.");
+                    return;
+                }
+
                 var harmony = new Harmony(nameof(NewFieldsRendererDefaultEditorPatch));
             
                 var renderAdditionalFieldsOnOptimizedGuiPostfix = AccessTools.Method(typeof(NewFieldsRendererDefaultEditorPatch), nameof(OnOptimizedInspectorGUI));
