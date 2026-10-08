@@ -1,5 +1,6 @@
 ﻿using System.Collections.Generic;
 using System.Linq;
+using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 
@@ -21,6 +22,13 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 
         public override void VisitFieldDeclaration(FieldDeclarationSyntax node)
         {
+            //Only instance fields need their values kept outside the object, a static field added to the patched type is just used from there
+            if (node.Modifiers.Any(m => m.IsKind(SyntaxKind.StaticKeyword) || m.IsKind(SyntaxKind.ConstKeyword)))
+            {
+                base.VisitFieldDeclaration(node);
+                return;
+            }
+
             var fieldName = node.Declaration.Variables.First().Identifier.ToString();
             var fullClassName = RoslynUtils.GetMemberFQDNWithoutMemberName(node);
             if(!_typeNameToFieldDeclarations.ContainsKey(fullClassName)) {
