@@ -35,14 +35,11 @@ namespace FastScriptReload.Editor.Compilation
 #endif
             +
             @"//
-// To debug simply add a breakpoint in this file.
-// 
-// With every code change - new file is generated, currently you'll need to re-set breakpoints after each change.
-// You can also:
-//    - step into the function that was changed (and that will get you to correct source file)
-//    - add a function breakpoint in your IDE (this way you won't have to re-add it every time)
+// Debug info of the compiled code points at the original files (via #line), breakpoints set there work for hot reloaded code.
+// Partial types spread over multiple files are the exception, set breakpoints in this file for them.
+// With every code change - new file is generated.
 //
-// Tool can automatically open dynamically-compiled code file every time to make setting breakpoints easier.
+// Tool can automatically open dynamically-compiled code file every time.
 // You can adjust that behaviour via 'Project Settings -> Fast Script Reload -> Advanced -> Auto-open generated source file for debugging'.
 //
 // You can always open generated file when needed by clicking link in console, eg.
@@ -87,6 +84,8 @@ namespace FastScriptReload.Editor.Compilation
                     })
                     .ToList();
 
+            //Partial types spread over files are merged into one tree, its lines don't match any of the files
+            var originalSourceCodeByPath = trees.ToDictionary(tree => tree.FilePath, tree => tree.GetText().ToString());
             trees = trees.MergePartials(definedPreprocessorSymbols).ToList();
 
             // It's important to check whether the compiler was able to correctly interpret the original code.
@@ -206,7 +205,10 @@ namespace FastScriptReload.Editor.Compilation
                     root = AddUserDefinedOverridenTypes(userDefinedOverridesRoot, root);
                 }
 
-                return root.ToFullString();
+                var sourceCode = root.ToFullString();
+                return originalSourceCodeByPath.TryGetValue(tree.FilePath, out var originalSourceCode) && tree.GetText().ToString() == originalSourceCode
+                    ? MapLinesToOriginalFile(sourceCode, tree.FilePath)
+                    : sourceCode;
             }).ToList();
 
             var sourceCodeCombinedSb = new StringBuilder();
@@ -224,6 +226,16 @@ namespace FastScriptReload.Editor.Compilation
             
             LoggerScoped.LogDebug("Source Code Created:\r\n\r\n" + sourceCodeCombinedSb);
             return new CreateSourceCodeCombinedContentsResult(sourceCodeCombinedSb.ToString(), typesDefined);
+        }
+
+        /// <summary>
+        /// Rewriting keeps the original lines (it changes code within lines and adds members after them), so the compiled code's
+        /// debug info can point at the original file: stack traces, breakpoints and 'open source' links use it instead of the temporary file
+        /// </summary>
+        private static string MapLinesToOriginalFile(string sourceCode, string originalFilePath)
+        {
+            var escapedPath = Path.GetFullPath(originalFilePath).Replace("\\", "\\\\").Replace("\"", "\\\"");
+            return $"#line 1 \"{escapedPath}\"{Environment.NewLine}{sourceCode}{Environment.NewLine}#line default";
         }
 
         private static SyntaxNode AddUserDefinedOverridenTypes(SyntaxNode userDefinedOverridesRoot, SyntaxNode root)
