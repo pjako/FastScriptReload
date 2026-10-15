@@ -60,6 +60,11 @@ namespace FastScriptReload.Editor
 
         //File watchers add entries from their own threads, every access needs to hold the lock
         private List<DynamicFileHotReloadState> _dynamicFileHotReloadStateEntries = new List<DynamicFileHotReloadState>();
+
+        //Every file changed since the last domain reload, compiled again with each hot reload. A reload of only the latest change
+        //could apply one side of an edit spanning files while the other side had failed (eg two methods each forwarding to the other:
+        //endless recursion). The dynamic assembly always holds the whole edited state, all of it applies or none
+        private readonly HashSet<string> _filesChangedSinceDomainReload = new HashSet<string>();
         private DateTime _lastFileChangeOn;
         private readonly object _dynamicFileHotReloadStateEntriesLock = new object();
 
@@ -518,8 +523,13 @@ namespace FastScriptReload.Editor
                 foreach (var c in changesAwaitingHotReload)
                 {
                     c.IsBeingProcessed = true;
+                    _filesChangedSinceDomainReload.Add(c.FullFileName);
                 }
             }
+
+            //Deleted files drop out, excluded ones never get in (see AddFileChangeToProcess)
+            _filesChangedSinceDomainReload.RemoveWhere(f => !File.Exists(f));
+            var filesToCompile = _filesChangedSinceDomainReload.ToList();
 
             if (changesAwaitingHotReload.Any())
             {
@@ -533,10 +543,8 @@ namespace FastScriptReload.Editor
                     List<string> sourceCodeFilesWithUniqueChangesAwaitingHotReload = null;
                     try
                     {
-                        sourceCodeFilesWithUniqueChangesAwaitingHotReload = changesAwaitingHotReload
-                            .GroupBy(e => e.FullFileName)
-                            .Select(e => e.First().FullFileName).ToList();
-                    
+                        sourceCodeFilesWithUniqueChangesAwaitingHotReload = filesToCompile;
+
                         var dynamicallyLoadedAssemblyCompilerResult = DynamicAssemblyCompiler.Compile(sourceCodeFilesWithUniqueChangesAwaitingHotReload, unityMainThreadDispatcher);
                         if (!dynamicallyLoadedAssemblyCompilerResult.IsError)
                         {
@@ -610,7 +618,8 @@ namespace FastScriptReload.Editor
             }
             else
             {
-                LoggerScoped.LogError($"Error when updating files: '{(sourceCodeFiles != null ? string.Join(",", sourceCodeFiles.Select(fn => new FileInfo(fn).Name)) : "unknown")}', {ex}");
+                LoggerScoped.LogError($"Error when updating files: '{(sourceCodeFiles != null ? string.Join(",", sourceCodeFiles.Select(fn => new FileInfo(fn).Name)) : "unknown")}' " +
+                                      $"(every file changed since Unity last compiled, they're compiled together until the error is fixed), {ex}");
             }
 
             changesAwaitingHotReload.ForEach(c =>

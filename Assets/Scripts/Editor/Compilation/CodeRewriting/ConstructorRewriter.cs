@@ -54,7 +54,13 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 
 	        private SyntaxNode AdjustCtorOrDestructorNameForTypeAdjustment(BaseMethodDeclarationSyntax node, SyntaxToken nodeIdentifier)
 	        {
-		        var typeName = (node.Ancestors().First(n => n is TypeDeclarationSyntax) as TypeDeclarationSyntax).Identifier.ToString();
+		        var typeDeclaration = (TypeDeclarationSyntax)node.Ancestors().First(n => n is TypeDeclarationSyntax);
+		        if (RoslynUtils.IsNewType(typeDeclaration))
+		        {
+			        return node; //New types keep their name, see HotReloadCompliantRewriter
+		        }
+
+		        var typeName = typeDeclaration.Identifier.ToString();
 		        if (!nodeIdentifier.ToFullString().Contains(typeName))
 		        {
 			        //Used Roslyn version bug, some static methods are also interpreted as ctors, eg

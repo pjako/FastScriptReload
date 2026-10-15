@@ -15,6 +15,11 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
         
         public override SyntaxNode VisitRecordDeclaration(RecordDeclarationSyntax node)
         {
+	        if (RoslynUtils.IsNewType(node))
+	        {
+		        return base.VisitRecordDeclaration(node); //New types keep their name, see HotReloadCompliantRewriter
+	        }
+
 	        return AdjustRecordName(node, node.Identifier);
         }
 

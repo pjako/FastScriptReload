@@ -11,7 +11,7 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
     {
         public List<string> StrippedUsingDirectives = new List<string>();
         public List<string> OriginalIdentifiersRenamedToContainPatchedPostfix = new List<string>();
-        
+
         public HotReloadCompliantRewriter(bool writeRewriteReasonAsComment, bool visitIntoStructuredTrivia = false) 
             : base(writeRewriteReasonAsComment, visitIntoStructuredTrivia)
         {
@@ -65,8 +65,15 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
             return base.VisitCompilationUnit(stripped);
         }
 
-        private SyntaxNode AddPatchedPostfixToTopLevelDeclarations(CSharpSyntaxNode node, SyntaxToken identifier)
+        private SyntaxNode AddPatchedPostfixToTopLevelDeclarations(MemberDeclarationSyntax node, SyntaxToken identifier)
         {
+            // Only types that are already loaded get the postfix: references in the file keep binding to the original type.
+            // A new type has no original, renaming it left every reference to it unresolved (CS0246) so the file never compiled
+            if (RoslynUtils.IsNewType(node))
+            {
+                return node;
+            }
+
             OriginalIdentifiersRenamedToContainPatchedPostfix.Add(identifier.ValueText);
             
             // keeps the identifier's trivia: dropping its trailing newline would shift every following line ('#line' mapping)
