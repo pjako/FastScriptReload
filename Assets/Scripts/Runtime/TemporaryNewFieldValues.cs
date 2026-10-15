@@ -1,8 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Dynamic;
+using System.Linq;
+using System.Runtime.CompilerServices;
 using UnityEngine;
-using Object = System.Object;
 
 namespace FastScriptReload.Scripts.Runtime
 {
@@ -11,7 +11,7 @@ namespace FastScriptReload.Scripts.Runtime
         public delegate object GetNewFieldInitialValue(Type forNewlyGeneratedType);
         public delegate Type GetNewFieldType(Type forNewlyGeneratedType);
 
-        private static readonly Dictionary<object, ExpandoForType> _existingObjectToFiledNameValueMap = new Dictionary<object, ExpandoForType>();
+        private static readonly Dictionary<object, NewFieldValuesForType> _existingObjectToFiledNameValueMap = new Dictionary<object, NewFieldValuesForType>();
         private static readonly Dictionary<Type, Dictionary<string, GetNewFieldInitialValue>> _existingObjectTypeToFieldNameToCreateDetaultValueFn = new Dictionary<Type, Dictionary<string, GetNewFieldInitialValue>>();
         private static readonly Dictionary<Type, Dictionary<string, GetNewFieldType>> _existingObjectTypeToFieldNameToType = new Dictionary<Type, Dictionary<string, GetNewFieldType>>();
         
@@ -28,35 +28,29 @@ namespace FastScriptReload.Scripts.Runtime
             _existingObjectTypeToFieldNameToType[existingType] = fieldNameToGetTypeFn;
         }
         
-        public static dynamic ResolvePatchedObject<TCreatedType>(object original)
+        //Returns the added field's storage by ref, so the rewritten code can use it like a real field: read, assign, pass as ref / out
+        public static ref TField ResolveField<TCreatedType, TField>(object original, string fieldName)
         {
-            if (!_existingObjectToFiledNameValueMap.TryGetValue(original, out var existingExpandoToObjectTypePair))
+            var fieldValues = ResolveFieldValues<TCreatedType>(original);
+            if (!(fieldValues.TryGetValue(fieldName, out var box) && box is StrongBox<TField> typedBox))
             {
-                var patchedObject = new ExpandoObject();
-                var expandoForType = new ExpandoForType { ForType = typeof(TCreatedType), Object = patchedObject };
-                
-                InitializeAdditionalFieldValues<TCreatedType>(original, patchedObject);
-                _existingObjectToFiledNameValueMap[original] = expandoForType;
-
-                return patchedObject;
-            }
-            else
-            {
-                if (existingExpandoToObjectTypePair.ForType != typeof(TCreatedType))
+                //field not initialized yet, or its type changed since
+                typedBox = new StrongBox<TField>();
+                if (CreateInitialValue<TCreatedType>(original.GetType(), fieldName, typeof(TField)) is TField initialValue)
                 {
-                    InitializeAdditionalFieldValues<TCreatedType>(original, existingExpandoToObjectTypePair.Object);
-                    existingExpandoToObjectTypePair.ForType = typeof(TCreatedType);
+                    typedBox.Value = initialValue;
                 }
-
-                return existingExpandoToObjectTypePair.Object;
+                fieldValues[fieldName] = typedBox;
             }
+
+            return ref typedBox.Value;
         }
         
-        public static bool TryGetDynamicallyAddedFieldValues(object forObject, out IDictionary<string, object> addedFieldValues)
+        public static bool TryGetDynamicallyAddedFieldValues(object forObject, out IDictionary<string, IStrongBox> addedFieldValues)
         {
-            if (_existingObjectToFiledNameValueMap.TryGetValue(forObject, out var expandoForType))
+            if (_existingObjectToFiledNameValueMap.TryGetValue(forObject, out var valuesForType))
             {
-                addedFieldValues = expandoForType.Object;
+                addedFieldValues = valuesForType.Values;
                 return true;
             }
 
@@ -64,31 +58,67 @@ namespace FastScriptReload.Scripts.Runtime
             return false;
         }
 
-        private static void InitializeAdditionalFieldValues<TCreatedType>(object original, ExpandoObject patchedObject)
+        private static Dictionary<string, IStrongBox> ResolveFieldValues<TCreatedType>(object original)
+        {
+            if (!_existingObjectToFiledNameValueMap.TryGetValue(original, out var valuesForType))
+            {
+                valuesForType = new NewFieldValuesForType();
+                _existingObjectToFiledNameValueMap[original] = valuesForType;
+            }
+
+            if (valuesForType.ForType != typeof(TCreatedType))
+            {
+                InitializeAdditionalFieldValues<TCreatedType>(original, valuesForType.Values);
+                valuesForType.ForType = typeof(TCreatedType);
+            }
+
+            return valuesForType.Values;
+        }
+
+        private static void InitializeAdditionalFieldValues<TCreatedType>(object original, Dictionary<string, IStrongBox> fieldValues)
         {
             var originalType = original.GetType(); //TODO: PERF: resolve via TOriginal, not getType
-            var patchedObjectAsDict = patchedObject as IDictionary<string, Object>;
-            foreach (var fieldNameToGenerateDefaultValueFn in _existingObjectTypeToFieldNameToCreateDetaultValueFn[originalType])
-            {
-                if (!patchedObjectAsDict.ContainsKey(fieldNameToGenerateDefaultValueFn.Key))
-                {
-                    patchedObjectAsDict[fieldNameToGenerateDefaultValueFn.Key] = fieldNameToGenerateDefaultValueFn.Value(typeof(TCreatedType));
+            var fieldNameToType = _existingObjectTypeToFieldNameToType[originalType];
 
-                    if (patchedObjectAsDict[fieldNameToGenerateDefaultValueFn.Key] == null)
-                    {
-                       var fieldType = _existingObjectTypeToFieldNameToType[originalType][fieldNameToGenerateDefaultValueFn.Key](typeof(TCreatedType));
-                       if (ReferenceTypeToCreateDefaultValueFn.TryGetValue(fieldType, out var createValueFn))
-                       {
-                           patchedObjectAsDict[fieldNameToGenerateDefaultValueFn.Key] = createValueFn();
-                       }
-                    }
-                }
+            //fields that were added in an earlier reload and removed since
+            foreach (var removedFieldName in fieldValues.Keys.Where(n => !fieldNameToType.ContainsKey(n)).ToList())
+            {
+                fieldValues.Remove(removedFieldName);
             }
+            
+            foreach (var fieldNameToGetTypeFn in fieldNameToType)
+            {
+                var fieldType = fieldNameToGetTypeFn.Value(typeof(TCreatedType));
+                var boxType = typeof(StrongBox<>).MakeGenericType(fieldType);
+                if (fieldValues.TryGetValue(fieldNameToGetTypeFn.Key, out var existingBox) && existingBox.GetType() == boxType)
+                {
+                    continue; //keep value from previous reload
+                }
+
+                var box = (IStrongBox)Activator.CreateInstance(boxType);
+                var initialValue = CreateInitialValue<TCreatedType>(originalType, fieldNameToGetTypeFn.Key, fieldType);
+                if (fieldType.IsInstanceOfType(initialValue))
+                {
+                    box.Value = initialValue;
+                }
+                fieldValues[fieldNameToGetTypeFn.Key] = box;
+            }
+        }
+
+        private static object CreateInitialValue<TCreatedType>(Type originalType, string fieldName, Type fieldType)
+        {
+            var initialValue = _existingObjectTypeToFieldNameToCreateDetaultValueFn[originalType][fieldName](typeof(TCreatedType));
+            if (initialValue == null && ReferenceTypeToCreateDefaultValueFn.TryGetValue(fieldType, out var createValueFn))
+            {
+                initialValue = createValueFn();
+            }
+
+            return initialValue;
         }
     }
 
-    public class ExpandoForType {
+    public class NewFieldValuesForType {
         public Type ForType;
-        public ExpandoObject Object;
+        public readonly Dictionary<string, IStrongBox> Values = new Dictionary<string, IStrongBox>();
     }
 }

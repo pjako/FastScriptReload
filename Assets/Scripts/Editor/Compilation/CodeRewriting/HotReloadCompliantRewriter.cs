@@ -1,4 +1,5 @@
 ﻿using System.Collections.Generic;
+using System.Linq;
 using FastScriptReload.Runtime;
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
@@ -47,22 +48,29 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
             return AddPatchedPostfixToTopLevelDeclarations(node, node.Identifier);
         }
 
-        public override SyntaxNode VisitUsingDirective(UsingDirectiveSyntax node)
+        public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
         {
-            if (node.Parent is CompilationUnitSyntax)
-            {
-                StrippedUsingDirectives.Add(node.ToFullString());
-                return null;
-            }
+            var usings = node.Usings;
+            if (usings.Count == 0) return base.VisitCompilationUnit(node);
 
-            return base.VisitUsingDirective(node);
+            foreach (var usingDirective in usings) StrippedUsingDirectives.Add(usingDirective.ToFullString());
+
+            // The usings move to the top of the combined file; their lines stay behind as blank lines, so the
+            // '#line 1 "<original file>"' mapping still matches line for line (stack traces, breakpoints)
+            var lineCount = usings.ToFullString().Count(c => c == '\n');
+            var stripped = node.WithUsings(default);
+            var firstToken = stripped.GetFirstToken(includeZeroWidth: true);
+            var padding = Enumerable.Repeat(SyntaxFactory.EndOfLine("\n"), lineCount);
+            stripped = stripped.ReplaceToken(firstToken, firstToken.WithLeadingTrivia(padding.Concat(firstToken.LeadingTrivia)));
+            return base.VisitCompilationUnit(stripped);
         }
 
         private SyntaxNode AddPatchedPostfixToTopLevelDeclarations(CSharpSyntaxNode node, SyntaxToken identifier)
         {
             OriginalIdentifiersRenamedToContainPatchedPostfix.Add(identifier.ValueText);
             
-            var newIdentifier = SyntaxFactory.Identifier(identifier + AssemblyChangesLoader.ClassnamePatchedPostfix);
+            // keeps the identifier's trivia: dropping its trailing newline would shift every following line ('#line' mapping)
+            var newIdentifier = SyntaxFactory.Identifier(identifier.LeadingTrivia, identifier.ValueText + AssemblyChangesLoader.ClassnamePatchedPostfix, identifier.TrailingTrivia);
             newIdentifier = AddRewriteCommentIfNeeded(newIdentifier, $"{nameof(HotReloadCompliantRewriter)}:{nameof(AddPatchedPostfixToTopLevelDeclarations)}");
             node = node.ReplaceToken(identifier, newIdentifier);
             return node;

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
 using FastScriptReload.Editor.Compilation.CodeRewriting;
 using FastScriptReload.Editor.Compilation.ScriptGenerationOverrides;
 using FastScriptReload.Runtime;
@@ -50,15 +51,25 @@ namespace FastScriptReload.Editor.Compilation
 	    
         public static readonly string[] ActiveScriptCompilationDefines;
         protected static readonly string DynamicallyCreatedAssemblyAttributeSourceCode = $"[assembly: {typeof(DynamicallyCreatedAssemblyAttribute).FullName}()]";
+
+        /// <summary>
+        /// The name of every hot reload assembly. A project grants it its internals with
+        /// <c>[assembly: InternalsVisibleTo("FastScriptReload.HotReload")]</c> (editor only is enough): Mono checks that
+        /// grant when a reloaded method touches an internal member of the project's assemblies. Without it the reload
+        /// compiles but throws FieldAccessException / MethodAccessException when it runs.
+        /// </summary>
+        public const string HotReloadAssemblyName = "FastScriptReload.HotReload";
+
         private static readonly string AssemblyCsharpFullPath;
 
-        //Read from compilation threads, invalidated from whichever thread loads an assembly
+        //Read from compilation threads, invalidated from whichever thread loads an assembly (AssemblyLoadWatcher.Version)
         private static readonly object ReferenceableAssembliesLock = new object();
         private static List<ReferenceableAssembly> _referenceableAssemblies;
+        private static int _referenceableAssembliesVersion;
 
         static DynamicCompilationBase()
         {
-            AppDomain.CurrentDomain.AssemblyLoad += OnAssemblyLoad;
+            AppDomain.CurrentDomain.AssemblyLoad += AssemblyLoadWatcher.OnAssemblyLoad;
 
             //needs to be set from main thread
             ActiveScriptCompilationDefines = EditorUserBuildSettings.activeScriptCompilationDefines;
@@ -346,11 +357,14 @@ namespace FastScriptReload.Editor.Compilation
         {
             lock (ReferenceableAssembliesLock)
             {
-                if (_referenceableAssemblies != null)
+                // read before enumerating: an assembly loading meanwhile bumps it, and the next call rebuilds
+                var version = Volatile.Read(ref AssemblyLoadWatcher.Version);
+                if (_referenceableAssemblies != null && _referenceableAssembliesVersion == version)
                 {
                     return _referenceableAssemblies;
                 }
 
+                _referenceableAssembliesVersion = version;
                 _referenceableAssemblies = new List<ReferenceableAssembly>();
                 foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies()
                              .Where(a => CustomAttributeExtensions.GetCustomAttribute<DynamicallyCreatedAssemblyAttribute>((Assembly)a) == null))
@@ -375,17 +389,28 @@ namespace FastScriptReload.Editor.Compilation
             }
         }
 
-        private static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
+        /// <summary>
+        /// The AssemblyLoad handler, kept out of DynamicCompilationBase on purpose. Mono raises AssemblyLoad on the loading
+        /// thread while it holds its loader lock. A handler on DynamicCompilationBase made that thread wait for the class's
+        /// static constructor, which runs on the main thread during InitializeOnLoad and is slow (AssetDatabase searches);
+        /// the main thread in turn needed the loader lock for its next JIT whenever the managed debugger agent is on (its
+        /// jit_end hook takes it) — a deadlock that froze the editor at "Initializing InitializeOnLoad" on a script reload
+        /// and on every start after it. This class has no static constructor and its handler takes no lock: it only bumps
+        /// a version that the cache compares against.
+        /// </summary>
+        private static class AssemblyLoadWatcher
         {
-            //Assemblies compiled for hot reload are never referenced, loading one doesn't change the list
-            if (args.LoadedAssembly.IsDefined(typeof(DynamicallyCreatedAssemblyAttribute), false))
-            {
-                return;
-            }
+            internal static int Version;
 
-            lock (ReferenceableAssembliesLock)
+            internal static void OnAssemblyLoad(object sender, AssemblyLoadEventArgs args)
             {
-                _referenceableAssemblies = null;
+                //Assemblies compiled for hot reload are never referenced, loading one doesn't change the list
+                if (args.LoadedAssembly.IsDefined(typeof(DynamicallyCreatedAssemblyAttribute), false))
+                {
+                    return;
+                }
+
+                Interlocked.Increment(ref Version);
             }
         }
 

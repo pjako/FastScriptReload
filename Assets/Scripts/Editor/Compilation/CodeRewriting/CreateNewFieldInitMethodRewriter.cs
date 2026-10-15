@@ -39,15 +39,17 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 				LoggerScoped.LogWarning($"Unable to find new-fields for type: {fullClassName}, this is not an issue if there are no new fields for that type.");
 			}
 
-			Func<FieldDeclarationSyntax, ExpressionSyntax> getObjectFnSyntax = fieldDeclarationNode => fieldDeclarationNode.Declaration.Variables[0].Initializer?.Value //value captured from initializer
-			                                            ?? SyntaxFactory.DefaultExpression(SyntaxFactory.IdentifierName(fieldDeclarationNode.Declaration.Type.ToString()));
+			//initializer is cast to the field type, values are stored typed (eg. 'float f = 1' has to produce a float, not an int)
+			Func<FieldDeclarationSyntax, ExpressionSyntax> getObjectFnSyntax = fieldDeclarationNode => fieldDeclarationNode.Declaration.Variables[0].Initializer?.Value is ExpressionSyntax initializerValue //value captured from initializer
+			                                            ? SyntaxFactory.CastExpression(fieldDeclarationNode.Declaration.Type.WithoutTrivia(), SyntaxFactory.ParenthesizedExpression(initializerValue.WithoutTrivia()))
+			                                            : SyntaxFactory.DefaultExpression(SyntaxFactory.IdentifierName(fieldDeclarationNode.Declaration.Type.ToString()));
 			var withDictionaryFieldNameToInitFieldValue = CreateNewFieldNameToGetObjectFnDictionary(node, newClassFields, getObjectFnSyntax, NewFieldsToCreateValueFnDictionaryFieldName);
 
 			//TODO: slightly odd scenario 'When explicit #nullable enable is used, reference types should be rewritten to typeof(type) for initialization and value types should remain typeof(type?)'
 			// Func<FieldDeclarationSyntax, ExpressionSyntax> getObjectTypeFnSyntax = fieldDeclarationNode => SyntaxFactory.TypeOfExpression(
 			// 	SyntaxFactory.ParseTypeName(fieldDeclarationNode.Declaration.Type.ToFullString().Replace("?", ""))
 			// );
-			Func<FieldDeclarationSyntax, ExpressionSyntax> getObjectTypeFnSyntax = fieldDeclarationNode => SyntaxFactory.TypeOfExpression(fieldDeclarationNode.Declaration.Type);
+			Func<FieldDeclarationSyntax, ExpressionSyntax> getObjectTypeFnSyntax = fieldDeclarationNode => SyntaxFactory.TypeOfExpression(fieldDeclarationNode.Declaration.Type.WithoutTrivia()); //without trivia: declaration without modifiers has the exclusion comment on its type
 			return CreateNewFieldNameToGetObjectFnDictionary(withDictionaryFieldNameToInitFieldValue, newClassFields, getObjectTypeFnSyntax, NewFieldsToGetTypeFnDictionaryFieldName);
 		}
 

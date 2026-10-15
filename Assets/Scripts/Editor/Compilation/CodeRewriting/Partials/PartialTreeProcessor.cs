@@ -43,7 +43,9 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 
             foreach (var file in otherPartialFiles)
             {
-                var partialTree = CSharpSyntaxTree.ParseText(File.ReadAllText(file), path: file);
+                // with the changed file's options: its defines (UNITY_EDITOR, ...) decide the other parts' #if blocks too,
+                // without them an "#if UNITY_EDITOR" part was disabled text and its members were silently missing
+                var partialTree = CSharpSyntaxTree.ParseText(File.ReadAllText(file), (CSharpParseOptions)tree.Options, file);
                 ProcessTree(partialTree, combinedTypes, combinedUsings);
             }
 
@@ -70,12 +72,32 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 
             var newRoot = SyntaxFactory.CompilationUnit()
                     .WithUsings(SyntaxFactory.List(combinedUsings.syntaxes))
-                    .WithMembers(SyntaxFactory.List(combinedTypeDeclarations))
+                    .WithMembers(SyntaxFactory.List(combinedTypeDeclarations));
+
+            // The parts were parsed with the defines, so their directives are already resolved: what's active is code,
+            // the rest disabled text. Kept, they no longer pair up once the parts are cut apart and rejoined — a file wrapped
+            // in "#if UNITY_EDITOR ... #endif" left the #if on its first using and lost the #endif with its end of file
+            // (CS1027). Dropped instead, with the disabled text.
+            newRoot = (CompilationUnitSyntax)new PreprocessorTriviaRemover().Visit(newRoot);
+            newRoot = newRoot
                     .WithAdditionalAnnotations(new SyntaxAnnotation("PreprocessorSymbols", string.Join(",", definedPreprocessorSymbols)))
                     .NormalizeWhitespace();
 
             return CSharpSyntaxTree.Create(newRoot, null, tree.FilePath)
                     .AddInternalsVisibleToAttribute();
+        }
+
+        /// <summary>Removes preprocessor directives (#if, #endif, #region, ...) and the disabled text between them.</summary>
+        private sealed class PreprocessorTriviaRemover : CSharpSyntaxRewriter
+        {
+            public PreprocessorTriviaRemover() : base(visitIntoStructuredTrivia: false)
+            {
+            }
+
+            public override SyntaxTrivia VisitTrivia(SyntaxTrivia trivia)
+            {
+                return trivia.IsDirective || trivia.IsKind(SyntaxKind.DisabledTextTrivia) ? default : base.VisitTrivia(trivia);
+            }
         }
 
         private static bool HasPartialTypes(SyntaxTree tree)

@@ -27,6 +27,13 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 		}
 
 
+		private static TypeSyntax ResolveFieldType(ClassDeclarationSyntax classNode, string fieldName)
+		{
+			return classNode.Members.OfType<FieldDeclarationSyntax>()
+				.First(f => f.Declaration.Variables.Any(v => v.Identifier.ToString() == fieldName))
+				.Declaration.Type.WithoutTrivia();
+		}
+
 		public override SyntaxNode VisitInvocationExpression(InvocationExpressionSyntax node)
 		{
 			if (node.Expression.ToString() == "nameof")
@@ -56,65 +63,94 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 			return base.VisitInvocationExpression(node);
 		}
 
+		public override SyntaxNode VisitMemberAccessExpression(MemberAccessExpressionSyntax node)
+		{
+			//this.NewField - whole expression is replaced, 'this' is passed to the accessor
+			if (node.Expression is ThisExpressionSyntax && node.Name is IdentifierNameSyntax name 
+				&& TryResolveNewField(name, out var classNode, out var fullClassName))
+			{
+				return AddRewriteCommentIfNeeded(
+					CreateNewFieldAccess(classNode, fullClassName, name.Identifier.ToString()).WithTriviaFrom(node),
+					$"{nameof(NewFieldsRewriter)}:{nameof(VisitMemberAccessExpression)}"
+				);
+			}
+
+			return base.VisitMemberAccessExpression(node);
+		}
+
 		public override SyntaxNode VisitIdentifierName(IdentifierNameSyntax node)
 		{
-			var classNode = node.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
-			if (classNode != null)
+			//name on the right of member access, eg Time.deltaTime, is not the new field (this.NewField is handled in VisitMemberAccessExpression)
+			if (node.Parent is MemberAccessExpressionSyntax memberAccessExpressionSyntax && memberAccessExpressionSyntax.Name == node)
 			{
-				var fullClassName = RoslynUtils.GetMemberFQDN(classNode, classNode.Identifier.ToString());
-				if (!string.IsNullOrEmpty(fullClassName))
-				{
-					var fieldName = node.Identifier.ToString();
-					if (_typeToNewFieldDeclarations.TryGetValue(fullClassName, out var allNewFieldNamesForClass))
-					{
-						if (allNewFieldNamesForClass.Contains(fieldName))
-						{
-							if(node.Parent is MemberAccessExpressionSyntax memberAccessExpressionSyntax)
-							{
-								//for member access expressions only rewrite if used with .this, eg this.NewField, that prevents rewriting of static class fields with same name
-								if (!memberAccessExpressionSyntax.ToString().StartsWith("this."))
-								{
-									return base.VisitIdentifierName(node);
-								}
-							}
-							
-							var isNameOfExpression = node.Ancestors().OfType<InvocationExpressionSyntax>().Any(e => e.Expression.ToString() == "nameof");
-							if (!isNameOfExpression) //nameof expression will be rewritten via VisitInvocationExpression
-							{
-								return
-								AddRewriteCommentIfNeeded(
-									SyntaxFactory.MemberAccessExpression(
-											SyntaxKind.SimpleMemberAccessExpression,
-											SyntaxFactory.InvocationExpression(
-													SyntaxFactory.MemberAccessExpression(
-														SyntaxKind.SimpleMemberAccessExpression,
-														SyntaxFactory.IdentifierName(typeof(TemporaryNewFieldValues).FullName),
-														SyntaxFactory.GenericName(
-																SyntaxFactory.Identifier(nameof(TemporaryNewFieldValues.ResolvePatchedObject)))
-															.WithTypeArgumentList(
-																SyntaxFactory.TypeArgumentList(
-																	SyntaxFactory.SingletonSeparatedList<TypeSyntax>(
-																		SyntaxFactory.IdentifierName(fullClassName + AssemblyChangesLoader.ClassnamePatchedPostfix))))))
-												.WithArgumentList(
-													SyntaxFactory.ArgumentList(
-														SyntaxFactory.SingletonSeparatedList<ArgumentSyntax>(
-															SyntaxFactory.Argument(
-																SyntaxFactory.ThisExpression())))),
-											SyntaxFactory.IdentifierName(fieldName))
-										.WithTriviaFrom(node),
-									$"{nameof(NewFieldsRewriter)}:{nameof(VisitIdentifierName)}"
-								);
-							}
-						}
-					}
-					else
-					{
-						LoggerScoped.LogWarning($"Unable to find type: {fullClassName}");
-					}
-				}
+				return base.VisitIdentifierName(node);
+			}
+
+			if (TryResolveNewField(node, out var classNode, out var fullClassName))
+			{
+				return AddRewriteCommentIfNeeded(
+					CreateNewFieldAccess(classNode, fullClassName, node.Identifier.ToString()).WithTriviaFrom(node),
+					$"{nameof(NewFieldsRewriter)}:{nameof(VisitIdentifierName)}"
+				);
 			}
 
 			return base.VisitIdentifierName(node);
+		}
+
+		private bool TryResolveNewField(IdentifierNameSyntax node, out ClassDeclarationSyntax classNode, out string fullClassName)
+		{
+			fullClassName = null;
+			classNode = node.Ancestors().OfType<ClassDeclarationSyntax>().FirstOrDefault();
+			if (classNode == null)
+			{
+				return false;
+			}
+
+			fullClassName = RoslynUtils.GetMemberFQDN(classNode, classNode.Identifier.ToString());
+			if (string.IsNullOrEmpty(fullClassName))
+			{
+				return false;
+			}
+
+			if (!_typeToNewFieldDeclarations.TryGetValue(fullClassName, out var allNewFieldNamesForClass))
+			{
+				LoggerScoped.LogWarning($"Unable to find type: {fullClassName}");
+				return false;
+			}
+
+			if (!allNewFieldNamesForClass.Contains(node.Identifier.ToString()))
+			{
+				return false;
+			}
+
+			//nameof expression will be rewritten via VisitInvocationExpression
+			return !node.Ancestors().OfType<InvocationExpressionSyntax>().Any(e => e.Expression.ToString() == "nameof");
+		}
+
+		//eg. TemporaryNewFieldValues.ResolveField<Foo__Patched_, int>(this, "newField"), it returns by ref,
+		//so the result is a variable and can still be assigned, incremented and passed as ref / out
+		private static ExpressionSyntax CreateNewFieldAccess(ClassDeclarationSyntax classNode, string fullClassName, string fieldName)
+		{
+			return SyntaxFactory.InvocationExpression(
+					SyntaxFactory.MemberAccessExpression(
+						SyntaxKind.SimpleMemberAccessExpression,
+						SyntaxFactory.IdentifierName(typeof(TemporaryNewFieldValues).FullName),
+						SyntaxFactory.GenericName(
+								SyntaxFactory.Identifier(nameof(TemporaryNewFieldValues.ResolveField)))
+							.WithTypeArgumentList(
+								SyntaxFactory.TypeArgumentList(
+									SyntaxFactory.SeparatedList<TypeSyntax>(new[]
+									{
+										SyntaxFactory.IdentifierName(fullClassName + AssemblyChangesLoader.ClassnamePatchedPostfix),
+										ResolveFieldType(classNode, fieldName)
+									})))))
+				.WithArgumentList(
+					SyntaxFactory.ArgumentList(
+						SyntaxFactory.SeparatedList<ArgumentSyntax>(new[]
+						{
+							SyntaxFactory.Argument(SyntaxFactory.ThisExpression()),
+							SyntaxFactory.Argument(SyntaxFactory.LiteralExpression(SyntaxKind.StringLiteralExpression, SyntaxFactory.Literal(fieldName)))
+						})));
 		}
 
 		public override SyntaxNode VisitFieldDeclaration(FieldDeclarationSyntax node)

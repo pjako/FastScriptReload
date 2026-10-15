@@ -124,9 +124,22 @@ namespace FastScriptReload.Editor.Compilation
             // Otherwise they'd pile up, compiled assemblies are never deleted while loaded (Windows keeps them locked)
             if (Directory.Exists(tempFolder))
             {
-                foreach (var leftoverFile in Directory.GetFiles(tempFolder))
+                foreach (var leftoverFile in Directory.GetFiles(tempFolder, "*", SearchOption.AllDirectories))
                 {
                     TryDeleteFile(leftoverFile);
+                }
+
+                // each reload's assembly sits in a folder of its own (same name every time, see Compile)
+                foreach (var leftoverFolder in Directory.GetDirectories(tempFolder))
+                {
+                    try
+                    {
+                        Directory.Delete(leftoverFolder, true);
+                    }
+                    catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+                    {
+                        LoggerScoped.LogDebug($"Unable to remove temporary folder: '{leftoverFolder}', {e.Message}");
+                    }
                 }
             }
 
@@ -168,11 +181,20 @@ namespace FastScriptReload.Editor.Compilation
             var sourceCodeCombinedFilePath = string.Empty;
             try
             {
-                var asmName = Guid.NewGuid().ToString().Replace("-", "");
-                var rspFile = _tempFolder + $"{asmName}.rsp";
-                var assemblyAttributeFilePath = _tempFolder + $"{asmName}.DynamicallyCreatedAssemblyAttribute.cs";
-                sourceCodeCombinedFilePath = _tempFolder + $"{asmName}.SourceCodeCombined.cs";
-                var outLibraryPath = $"{_tempFolder}{asmName}.dll";
+                // Every hot reload assembly has the same name, HotReloadAssemblyName, so a project can grant it its
+                // internals: [assembly: InternalsVisibleTo("FastScriptReload.HotReload")]. That grant is what the
+                // runtime checks — the InternalsVisibleTo copies below only get the code past the compiler, and Unity's
+                // Mono ignores IgnoresAccessChecksTo, so without it the first internal member a reloaded method touches
+                // throws FieldAccessException / MethodAccessException. The compiler names the assembly after its file,
+                // so each reload gets a folder of its own; files beside it keep the unique id.
+                var reloadId = Guid.NewGuid().ToString().Replace("-", "");
+                var asmName = HotReloadAssemblyName;
+                var rspFile = _tempFolder + $"{reloadId}.rsp";
+                var assemblyAttributeFilePath = _tempFolder + $"{reloadId}.DynamicallyCreatedAssemblyAttribute.cs";
+                sourceCodeCombinedFilePath = _tempFolder + $"{reloadId}.SourceCodeCombined.cs";
+                var reloadFolder = _tempFolder + reloadId + Path.DirectorySeparatorChar;
+                Directory.CreateDirectory(reloadFolder);
+                var outLibraryPath = $"{reloadFolder}{asmName}.dll";
 
                 var createSourceCodeCombinedResult = CreateSourceCodeCombinedContents(filePathsWithSourceCode, ActiveScriptCompilationDefines.ToList());
                 CreateFileAndTrackAsCleanup(sourceCodeCombinedFilePath, createSourceCodeCombinedResult.SourceCode, _createdFilesToCleanUp);
@@ -215,7 +237,10 @@ namespace FastScriptReload.Editor.Compilation
                     exitCode = ExecuteDotnetExeCompilation(_dotnetExePath, _cscDll, rspFile, outLibraryPath, out outputMessages);
                 }
 
-                var compiledAssembly = Assembly.LoadFrom(outLibraryPath);
+                // From bytes, not LoadFrom: every reload's assembly has the same name, and LoadFrom would hand back the
+                // first one loaded. The pdb keeps the debug info (breakpoints, line numbers in stack traces).
+                var pdbPath = Path.ChangeExtension(outLibraryPath, ".pdb");
+                var compiledAssembly = Assembly.Load(File.ReadAllBytes(outLibraryPath), File.Exists(pdbPath) ? File.ReadAllBytes(pdbPath) : null);
                 return new CompileResult(outLibraryPath, outputMessages, exitCode, compiledAssembly, createSourceCodeCombinedResult.SourceCode,
                     sourceCodeCombinedFilePath, createInternalVisibleToAsmElapsedMilliseconds);
             }

@@ -99,39 +99,40 @@ namespace FastScriptReload.Editor.NewFields
                         foreach (var addedFieldValueKey in _cachedKeys)
                         {
                             var newFieldType = (Type)newFieldNameToGetTypeFn[addedFieldValueKey]();
+                            var box = addedFieldValues[addedFieldValueKey];
 
                             //rendering types come from UnityEditor.EditorGUI.DefaultPropertyField - that should handle all cases that editor can render
-                            if (newFieldType == typeof(int)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.IntField(addedFieldValueKey, (int)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(bool)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Toggle(addedFieldValueKey, (bool)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(float)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.FloatField(addedFieldValueKey, (float)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(string)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.TextField(addedFieldValueKey, (string)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Color)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.ColorField(addedFieldValueKey, (Color)addedFieldValues[addedFieldValueKey]);
+                            if (newFieldType == typeof(int)) box.Value = EditorGUILayout.IntField(addedFieldValueKey, (int)box.Value);
+                            else if (newFieldType == typeof(bool)) box.Value = EditorGUILayout.Toggle(addedFieldValueKey, (bool)box.Value);
+                            else if (newFieldType == typeof(float)) box.Value = EditorGUILayout.FloatField(addedFieldValueKey, (float)box.Value);
+                            else if (newFieldType == typeof(string)) box.Value = EditorGUILayout.TextField(addedFieldValueKey, (string)box.Value);
+                            else if (newFieldType == typeof(Color)) box.Value = EditorGUILayout.ColorField(addedFieldValueKey, (Color)box.Value);
                             //TODO: SerializedPropertyType.LayerMask
-                            else if (newFieldType == typeof(Enum)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.EnumPopup(addedFieldValueKey, (Enum)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Vector2)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Vector2Field(addedFieldValueKey, (Vector2)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Vector3)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Vector3Field(addedFieldValueKey, (Vector3)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Vector4)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Vector4Field(addedFieldValueKey, (Vector4)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Rect)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.RectField(addedFieldValueKey, (Rect)addedFieldValues[addedFieldValueKey]);
+                            else if (newFieldType == typeof(Enum)) box.Value = EditorGUILayout.EnumPopup(addedFieldValueKey, (Enum)box.Value);
+                            else if (newFieldType == typeof(Vector2)) box.Value = EditorGUILayout.Vector2Field(addedFieldValueKey, (Vector2)box.Value);
+                            else if (newFieldType == typeof(Vector3)) box.Value = EditorGUILayout.Vector3Field(addedFieldValueKey, (Vector3)box.Value);
+                            else if (newFieldType == typeof(Vector4)) box.Value = EditorGUILayout.Vector4Field(addedFieldValueKey, (Vector4)box.Value);
+                            else if (newFieldType == typeof(Rect)) box.Value = EditorGUILayout.RectField(addedFieldValueKey, (Rect)box.Value);
                             //TODO: SerializedPropertyType.ArraySize
                             //TODO: SerializedPropertyType.Character
-                            // else if (existingValueType == typeof(char)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.TextField(addedFieldValueKey, (char)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(AnimationCurve)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.CurveField(addedFieldValueKey, (AnimationCurve)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Bounds)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.BoundsField(addedFieldValueKey, (Bounds)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Gradient)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.GradientField(addedFieldValueKey, (Gradient)addedFieldValues[addedFieldValueKey]);
+                            // else if (existingValueType == typeof(char)) box.Value = EditorGUILayout.TextField(addedFieldValueKey, (char)box.Value);
+                            else if (newFieldType == typeof(AnimationCurve)) box.Value = EditorGUILayout.CurveField(addedFieldValueKey, (AnimationCurve)box.Value);
+                            else if (newFieldType == typeof(Bounds)) box.Value = EditorGUILayout.BoundsField(addedFieldValueKey, (Bounds)box.Value);
+                            else if (newFieldType == typeof(Gradient)) box.Value = EditorGUILayout.GradientField(addedFieldValueKey, (Gradient)box.Value);
                             //TODO: SerializedPropertyType.FixedBufferSize
-                            else if (newFieldType == typeof(Vector2Int)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Vector2IntField(addedFieldValueKey, (Vector2Int)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(Vector3Int)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.Vector3IntField(addedFieldValueKey, (Vector3Int)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(RectInt)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.RectIntField(addedFieldValueKey, (RectInt)addedFieldValues[addedFieldValueKey]);
-                            else if (newFieldType == typeof(BoundsInt)) addedFieldValues[addedFieldValueKey] = EditorGUILayout.BoundsIntField(addedFieldValueKey, (BoundsInt)addedFieldValues[addedFieldValueKey]);
+                            else if (newFieldType == typeof(Vector2Int)) box.Value = EditorGUILayout.Vector2IntField(addedFieldValueKey, (Vector2Int)box.Value);
+                            else if (newFieldType == typeof(Vector3Int)) box.Value = EditorGUILayout.Vector3IntField(addedFieldValueKey, (Vector3Int)box.Value);
+                            else if (newFieldType == typeof(RectInt)) box.Value = EditorGUILayout.RectIntField(addedFieldValueKey, (RectInt)box.Value);
+                            else if (newFieldType == typeof(BoundsInt)) box.Value = EditorGUILayout.BoundsIntField(addedFieldValueKey, (BoundsInt)box.Value);
                             //TODO: SerializedPropertyType.Hash128
                             else if (newFieldType == typeof(Quaternion))
                             {
                                 //Quaternions are rendered as euler angles in editor
-                                addedFieldValues[addedFieldValueKey] = Quaternion.Euler(EditorGUILayout.Vector3Field(addedFieldValueKey, ((Quaternion)addedFieldValues[addedFieldValueKey]).eulerAngles));
+                                box.Value = Quaternion.Euler(EditorGUILayout.Vector3Field(addedFieldValueKey, ((Quaternion)box.Value).eulerAngles));
                             }
                             else if (typeof(UnityEngine.Object).IsAssignableFrom(newFieldType))
                             {
-                                addedFieldValues[addedFieldValueKey] = EditorGUILayout.ObjectField(new GUIContent(addedFieldValueKey), (UnityEngine.Object)addedFieldValues[addedFieldValueKey], newFieldType, target);
+                                box.Value = EditorGUILayout.ObjectField(new GUIContent(addedFieldValueKey), (UnityEngine.Object)box.Value, newFieldType, target);
                             }
 
                             else

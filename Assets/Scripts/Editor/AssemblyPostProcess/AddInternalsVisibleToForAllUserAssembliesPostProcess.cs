@@ -34,9 +34,11 @@ namespace FastScriptReload.Editor.AssemblyPostProcess
             if (!AdjustedAssemblyRoot.Exists)
                 AdjustedAssemblyRoot.Create();
 
-            // var readerParams = new ReaderParameters { ReadWrite = false };
+            // var readerParams = new ReaderParameters { ReadWrite = false, AssemblyResolver = resolver };
             var readerParams = Activator.CreateInstance(ReaderParametersType);
             ReaderParametersType.GetProperty("ReadWrite").SetValue(readerParams, false);
+            var resolver = CreateResolver(changedAssembly);
+            ReaderParametersType.GetProperty("AssemblyResolver").SetValue(readerParams, resolver);
 
             // var assembly = AssemblyDefinition.ReadAssembly(path, readerParams);
             var readAssemblyMethod = AssemblyDefinitionType.GetMethod("ReadAssembly", new[] { typeof(string), ReaderParametersType });
@@ -84,7 +86,53 @@ namespace FastScriptReload.Editor.AssemblyPostProcess
                 // AssemblyDefinition is IDisposable
                 if (assemblyDef is IDisposable disposable)
                     disposable.Dispose();
+                (resolver as IDisposable)?.Dispose();
             }
+        }
+
+        /// <summary>
+        /// Cecil resolves the changed assembly's references while writing the copy. Its default resolver only looks in the
+        /// working directory and "bin", so an asmdef assembly next to it in Library/ScriptAssemblies (Assembly-CSharp
+        /// referencing a project asmdef) failed with AssemblyResolutionException, the copy wasn't made, and every internal
+        /// type of the assembly was inaccessible to the recompiled code (CS0122). Searched instead: the assembly's own
+        /// folder, then the folder of every assembly the editor has loaded (packages, plugins, Unity's managed folders).
+        /// </summary>
+        private static object CreateResolver(Assembly changedAssembly)
+        {
+            // var resolver = new DefaultAssemblyResolver();
+            var resolverType = CecilAssembly.GetType("Mono.Cecil.DefaultAssemblyResolver");
+            var resolver = Activator.CreateInstance(resolverType);
+            var addSearchDirectory = resolverType.GetMethod("AddSearchDirectory", new[] { typeof(string) });
+
+            var directories = new System.Collections.Generic.List<string>();
+            void Add(string location)
+            {
+                if (string.IsNullOrEmpty(location))
+                    return;
+                var directory = Path.GetDirectoryName(location);
+                if (!string.IsNullOrEmpty(directory) && !directories.Contains(directory))
+                    directories.Add(directory);
+            }
+
+            Add(changedAssembly.Location);
+            foreach (var loaded in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (loaded.IsDynamic)
+                    continue;
+                try
+                {
+                    Add(loaded.Location);
+                }
+                catch (NotSupportedException)
+                {
+                    // in-memory assemblies (hot reload's own) have no location
+                }
+            }
+
+            foreach (var directory in directories)
+                addSearchDirectory.Invoke(resolver, new object[] { directory });
+
+            return resolver;
         }
     }
 }

@@ -141,6 +141,9 @@ namespace FastScriptReload.Editor
 
                 _dynamicFileHotReloadStateEntries.Add(new DynamicFileHotReloadState(filePath, DateTime.UtcNow));
             }
+
+            // An unfocused editor barely ticks: keep it turning through the settle delay, the compile and applying it
+            EditorWakeUp.KeepAwakeFor(5000);
         }
 
         public bool ShouldIgnoreFileChange()
@@ -372,6 +375,43 @@ namespace FastScriptReload.Editor
             return AssetDatabase.GetAssetPath(obj);
         }
 
+        // Unity's Auto Refresh compiles and reloads every saved script once the editor gets focus: outside play mode that
+        // threw away each edit FSR had just hot reloaded. While edit mode hot reload is on, auto refresh is held
+        // (Cmd+R / Assets > Refresh still compiles on demand); released for play mode and before every domain reload, as
+        // the hold is a native counter that outlives the managed flag tracking it.
+        private static bool _autoRefreshHeld;
+
+        private static void HoldUnityAutoRefreshWhileEditModeHotReload()
+        {
+            var hold = Instance._isEditorModeHotReloadEnabled && !EditorApplication.isPlayingOrWillChangePlaymode;
+            if (hold == _autoRefreshHeld)
+            {
+                return;
+            }
+
+            if (hold)
+            {
+                _autoRefreshHeld = true;
+                AssetDatabase.DisallowAutoRefresh();
+                AssemblyReloadEvents.beforeAssemblyReload += ReleaseUnityAutoRefresh;
+                LoggerScoped.Log("Edit mode hot reload: Unity's Auto Refresh is held, saved scripts hot reload instead of recompiling. Cmd/Ctrl+R compiles.");
+            }
+            else
+            {
+                ReleaseUnityAutoRefresh();
+            }
+        }
+
+        private static void ReleaseUnityAutoRefresh()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload -= ReleaseUnityAutoRefresh;
+            if (_autoRefreshHeld)
+            {
+                _autoRefreshHeld = false;
+                AssetDatabase.AllowAutoRefresh();
+            }
+        }
+
         public void Update()
         {
             while (_mainThreadActions.TryDequeue(out var mainThreadAction))
@@ -380,6 +420,7 @@ namespace FastScriptReload.Editor
             }
 
             _isEditorModeHotReloadEnabled = (bool)FastScriptReloadPreference.EnableExperimentalEditorHotReloadSupport.GetEditorPersistedValueOrDefault();
+            HoldUnityAutoRefreshWhileEditModeHotReload();
 
             //File watchers also run outside play mode, changes there are compiled by Unity, see RequestUnityRefresh
             EnsureInitialized();

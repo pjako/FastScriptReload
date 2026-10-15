@@ -76,7 +76,7 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
 		        }
 
 		        return AddRewriteCommentIfNeeded(
-			        node.ReplaceToken(nodeIdentifier, SyntaxFactory.Identifier(typeName)), 
+			        node.ReplaceToken(nodeIdentifier, SyntaxFactory.Identifier(nodeIdentifier.LeadingTrivia, typeName, nodeIdentifier.TrailingTrivia)),
 			        $"{nameof(ConstructorRewriter)}:{nameof(AdjustCtorOrDestructorNameForTypeAdjustment)}"
 			    );
 	        }
