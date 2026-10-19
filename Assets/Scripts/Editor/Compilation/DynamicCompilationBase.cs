@@ -84,6 +84,7 @@ namespace FastScriptReload.Editor.Compilation
         protected static CreateSourceCodeCombinedContentsResult CreateSourceCodeCombinedContents(List<string> sourceCodeFiles, List<string> definedPreprocessorSymbols)
         {
             var combinedUsingStatements = new List<string>();
+            var combinedAssemblyAttributes = new List<string>();
             var typesDefined = new List<string>();
 
             var trees = sourceCodeFiles
@@ -204,6 +205,7 @@ namespace FastScriptReload.Editor.Compilation
                 var hotReloadCompliantRewriter = new HotReloadCompliantRewriter(DebugWriteRewriteReasonAsComment);
                 root = hotReloadCompliantRewriter.Visit(root);
                 combinedUsingStatements.AddRange(hotReloadCompliantRewriter.StrippedUsingDirectives);
+                combinedAssemblyAttributes.AddRange(hotReloadCompliantRewriter.StrippedAssemblyAttributes);
                 
                 root = new BuilderPatternFunctionsRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
                 root = new RecordeRewriter(DebugWriteRewriteReasonAsComment).Visit(root);
@@ -228,6 +230,11 @@ namespace FastScriptReload.Editor.Compilation
             foreach (var usingStatement in combinedUsingStatements.Distinct())
             {
                 sourceCodeCombinedSb.Append(usingStatement);
+            }
+
+            foreach (var assemblyAttribute in combinedAssemblyAttributes.Distinct())
+            {
+                sourceCodeCombinedSb.Append(assemblyAttribute);
             }
 
             foreach (var sourceCodeWithAdjustment in sourceCodeWithAdjustments)

@@ -10,6 +10,7 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
     class HotReloadCompliantRewriter : FastScriptReloadCodeRewriterBase
     {
         public List<string> StrippedUsingDirectives = new List<string>();
+        public List<string> StrippedAssemblyAttributes = new List<string>();
         public List<string> OriginalIdentifiersRenamedToContainPatchedPostfix = new List<string>();
 
         public HotReloadCompliantRewriter(bool writeRewriteReasonAsComment, bool visitIntoStructuredTrivia = false) 
@@ -51,16 +52,26 @@ namespace FastScriptReload.Editor.Compilation.CodeRewriting
         public override SyntaxNode VisitCompilationUnit(CompilationUnitSyntax node)
         {
             var usings = node.Usings;
-            if (usings.Count == 0) return base.VisitCompilationUnit(node);
+            var attributeLists = node.AttributeLists;
+            if (usings.Count == 0 && attributeLists.Count == 0) return base.VisitCompilationUnit(node);
 
             foreach (var usingDirective in usings) StrippedUsingDirectives.Add(usingDirective.ToFullString());
 
+            // Assembly and module attributes (a file's own, or the InternalsVisibleTo a merged partial gets) have to come
+            // before every type of the combined file, which is the files one after another: left in place, the second file's
+            // were behind the first file's types (CS1730). They move up behind the usings, their trivia (comments, directives) stays
+            foreach (var attributeList in attributeLists) StrippedAssemblyAttributes.Add(attributeList.WithoutTrivia().ToFullString() + "\n");
+
             // The usings move to the top of the combined file; their lines stay behind as blank lines, so the
             // '#line 1 "<original file>"' mapping still matches line for line (stack traces, breakpoints)
-            var lineCount = usings.ToFullString().Count(c => c == '\n');
-            var stripped = node.WithUsings(default);
+            var padding = Enumerable.Repeat(SyntaxFactory.EndOfLine("\n"), usings.ToFullString().Count(c => c == '\n')).ToList();
+            foreach (var attributeList in attributeLists)
+            {
+                padding.AddRange(attributeList.GetLeadingTrivia());
+                padding.AddRange(Enumerable.Repeat(SyntaxFactory.EndOfLine("\n"), attributeList.WithoutLeadingTrivia().ToFullString().Count(c => c == '\n')));
+            }
+            var stripped = node.WithUsings(default).WithAttributeLists(default);
             var firstToken = stripped.GetFirstToken(includeZeroWidth: true);
-            var padding = Enumerable.Repeat(SyntaxFactory.EndOfLine("\n"), lineCount);
             stripped = stripped.ReplaceToken(firstToken, firstToken.WithLeadingTrivia(padding.Concat(firstToken.LeadingTrivia)));
             return base.VisitCompilationUnit(stripped);
         }
